@@ -21,8 +21,35 @@
 - `uv run python scripts/smoke_mcp.py` 对 MCP 服务做端到端测试（cavity 算例）。
 - 项目文档（README、AGENTS.md、docs/）使用中文撰写。
 
-## 文档维护
-- 项目文档由 `doc-writer` 子代理负责更新和维护（定义在 `.opencode/agents/doc-writer.md`，模型
-  `deepseek/deepseek-flash`，只能修改 `README.md`、`AGENTS.md`、`docs/**`）。
-- 完成会影响文档的变更后（新增/修改 MCP 工具、目录结构、环境变量、约定、路线图进展），应调用它同步文档。
-  子代理上下文是全新的，任务描述里要写清楚改了什么、涉及哪些文件。
+## 子代理
+所有子代理使用 OpenCode 的 `opencode` provider 下的免费模型（`*-free`）。定义在 `.opencode/agents/`，`explore` 的模型在 `opencode.json` 中覆盖。
+子代理上下文是全新的，任务描述里必须写清楚背景、计划文件路径、涉及的文件。
+
+| 子代理 | 模型 | 职责与权限 |
+| --- | --- | --- |
+| `explore`（内置） | `opencode/deepseek-v4.1-flash-free` | 只读探索代码库 |
+| `implementer` | `opencode/deepseek-v4.1-flash-free` | 按计划实现代码和测试；不改文档、`.opencode/**`，不做 git 提交 |
+| `reviewer` | `opencode/glm-5.3-flash-free` | 只读审查计划和实现；可运行 `uv run pytest`，不改任何文件 |
+| `doc-writer` | `opencode/deepseek-v4.1-flash-free` | 只能改 `README.md`、`AGENTS.md`、`docs/**` |
+
+## 开发流程
+每个开发任务按四个阶段推进，**阶段切换都需要用户确认**，不得自行跳过。
+
+1. **Phase 1 计划**：主 agent 分析需求，按 `.opencode/plans/_template.md` 写详细计划，保存为
+   `.opencode/plans/YYYYMMDD-<英文短名>.md`。需求或技术路线有疑问时先问用户。计划写完后请用户确认；
+   用户确认后将计划状态改为"已确认"，进入 Phase 2。
+2. **Phase 2 实现**：调用 `implementer`，传入计划文件路径，按计划实现并测试。若它报告计划不清晰或不合理，
+   回到 Phase 1 修改计划（在计划的"修订记录"中记一笔），重新请用户确认后再实现。实现完成后进入 Phase 3。
+3. **Phase 3 审查**：调用 `reviewer`，传入计划路径和 implementer 的报告，审查计划与实现是否合理。
+   审查发现的问题**如实反馈给用户**，由用户决定是否回到 Phase 1 调整计划。用户确认不再修改后进入 Phase 4。
+   主 agent 不得替用户决定忽略或采纳审查意见。
+4. **Phase 4 文档**：调用 `doc-writer`，传入变更说明和 implementer / reviewer 报告里的"文档影响"。
+   把文档改动告知用户；用户确认不需要进一步修改后，任务结束（计划状态改为"已完成"）。
+
+补充说明：
+- 计划状态由主 agent 维护，随阶段推进更新：草稿（Phase 1）→ 已确认（用户确认计划）→ 实现中（调用
+  `implementer` 前）→ 已实现（`implementer` 返回后）→ 评审中（Phase 3）→ 文档中（Phase 4）→ 已完成；
+  用户否决或终止任务时改为已取消。回到 Phase 1 修改计划时状态退回草稿。
+- 计划文件是流程的唯一依据，所有修订都要写回计划，不要只在对话里说。
+- 琐碎改动（如改错别字、单行修复）可以与用户商定后跳过流程，但需要用户明确同意。
+- 主 agent 自己不直接实现计划内的代码，实现交给 `implementer`。

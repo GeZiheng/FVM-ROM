@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .idea/
+# .opencode/agents 和 .opencode/plans 需要纳入版本控制
+.opencode/node_modules/
 
 # runtime state of the MCP server (jobs, temp scripts)
 .fvmrom/
