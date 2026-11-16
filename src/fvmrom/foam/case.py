@@ -38,6 +38,14 @@ class Cases:
             raise FileNotFoundError(f"Case not found: {case}")
         return p
 
+    def create(self, case: str) -> dict:
+        p = self.path(case, must_exist=False)
+        if p.exists():
+            raise FileExistsError(f"Case already exists: {case}")
+        for sub in ("system", "constant", "0"):
+            (p / sub).mkdir(parents=True)
+        return self.summary(case)
+
     def wsl_path(self, case: str) -> str:
         return win_to_wsl(self.path(case))
 

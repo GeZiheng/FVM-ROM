@@ -22,8 +22,8 @@ jobs = Jobs(settings)
 mcp = FastMCP(
     "openfoam",
     instructions=(
-        "Tools for OpenFOAM v2312 running in WSL2. Typical flow: copy_tutorial (or write case "
-        "files) -> run_foam_app blockMesh/checkMesh -> start_foam_job for the solver -> "
+        "Tools for OpenFOAM v2312 running in WSL2. Typical flow: copy_tutorial (or create_case + "
+        "write_case_file) -> run_foam_app blockMesh/checkMesh -> start_foam_job for the solver -> "
         "job_status / parse_solver_log -> case_summary. Case names are paths relative to the "
         "cases directory. Applications run with the case as working directory and write their "
         "output to <case>/log.<app>."
@@ -73,6 +73,14 @@ def list_tutorials(contains: str = "", limit: int = 100) -> list[str]:
 def copy_tutorial(tutorial: str, case_name: str) -> dict:
     """Copy a tutorial (e.g. 'incompressible/icoFoam/cavity/cavity') into cases/<case_name>."""
     return tut.copy_tutorial(wsl, cases, tutorial, case_name)
+
+
+@mcp.tool()
+def create_case(case: str) -> dict:
+    """Create an empty case cases/<case> with system/, constant/ and 0/ directories. Then fill it
+    with write_case_file (controlDict, fvSchemes, fvSolution, blockMeshDict, 0/U, ...). Fails if
+    the case already exists."""
+    return cases.create(case)
 
 
 @mcp.tool()

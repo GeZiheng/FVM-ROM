@@ -67,6 +67,19 @@ def test_cases_summary(tmp_path):
         cs.write("c1", "../evil", "x")
 
 
+def test_create_case(tmp_path):
+    cs = Cases(Settings(cases_dir=tmp_path))
+    s = cs.create("new")
+    assert s["has_system"] and s["has_constant"] and not s["has_mesh"]
+    assert (tmp_path / "new" / "0").is_dir()
+    cs.write("new", "system/controlDict", "application icoFoam;\n")
+    with pytest.raises(FileExistsError):
+        cs.create("new")
+    for bad in ("../evil", "C:/x", "/abs", "", "."):
+        with pytest.raises(ValueError):
+            cs.create(bad)
+
+
 def test_parse_log(tmp_path):
     log = tmp_path / "log.simpleFoam"
     log.write_text(

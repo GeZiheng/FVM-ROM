@@ -48,6 +48,42 @@ def test_cavity_workflow(env):
     assert cases.time_dirs("cavity")[-1] == "0.5"
 
 
+_CONTROL_DICT = """FoamFile { version 2.0; format ascii; class dictionary; object controlDict; }
+application icoFoam;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime 0.1;
+deltaT 0.005;
+writeControl timeStep;
+writeInterval 10;
+"""
+_BLOCKMESH = """FoamFile { version 2.0; format ascii; class dictionary; object blockMeshDict; }
+convertToMeters 1;
+vertices ((0 0 0) (1 0 0) (1 1 0) (0 1 0) (0 0 0.1) (1 0 0.1) (1 1 0.1) (0 1 0.1));
+blocks (hex (0 1 2 3 4 5 6 7) (4 4 1) simpleGrading (1 1 1));
+boundary
+(
+    walls { type wall; faces ((3 7 6 2) (0 4 7 3) (2 6 5 1) (1 5 4 0)); }
+    frontAndBack { type empty; faces ((0 3 2 1) (4 5 6 7)); }
+);
+"""
+
+
+def test_custom_case_from_scratch(env):
+    from fvmrom.foam.commands import build_run_script
+
+    s, wsl, cases, _ = env
+    cases.create("mine")
+    cases.write("mine", "system/controlDict", _CONTROL_DICT)
+    cases.write("mine", "system/blockMeshDict", _BLOCKMESH)
+    body = build_run_script(cases.wsl_path("mine"), "blockMesh", [], 1, "log.blockMesh")
+    r = wsl.run(body, timeout=60)
+    assert r.returncode == 0, (cases.root / "mine" / "log.blockMesh").read_text()
+    summary = cases.summary("mine")
+    assert summary["has_mesh"] and summary["control_dict"]["application"] == "icoFoam"
+
+
 def test_refuses_non_openfoam_executable(env):
     from fvmrom.foam.commands import build_run_script
 

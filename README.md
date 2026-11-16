@@ -51,7 +51,7 @@ OpenCode 会通过 `opencode.json` 自动加载该服务（名称：`openfoam`�
 ## MCP 工具
 
 - 环境：`foam_env_info`、`list_tutorials`
-- 算例：`copy_tutorial`、`list_cases`、`case_summary`、`list_case_files`、`read_case_file`、
+- 算例：`create_case`、`copy_tutorial`、`list_cases`、`case_summary`、`list_case_files`、`read_case_file`、
   `write_case_file`、`foam_dict_get`、`foam_dict_set`
 - 运行：`run_foam_app`（前台运行，可用 `np` 指定 MPI 进程数）、`start_foam_job`、`job_status`、
   `list_jobs`、`stop_job`
