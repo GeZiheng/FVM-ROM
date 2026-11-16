@@ -1,23 +1,21 @@
-# Roadmap
+# 路线图
 
-## Done
-- [x] Project skeleton (uv, src layout, tests)
-- [x] WSL2 <-> OpenFOAM access layer
-- [x] OpenFOAM MCP server (17 tools): env, tutorials, cases, run (fg/bg, MPI), logs
+## 已完成
+- [x] 项目骨架（uv、src 布局、测试）
+- [x] WSL2 <-> OpenFOAM 访问层
+- [x] OpenFOAM MCP 服务（17 个工具）：环境、教程、算例、运行（前台/后台、MPI）、日志
 
-## To be decided together (open questions)
-- Target problem: which physics / geometry / parameters? (e.g. lid-driven cavity, cylinder wake,
-  parametrised Re / inlet velocity / geometry)
-- Intrusive vs non-intrusive ROM:
-  - Non-intrusive: POD (+ RBF / GP / NN) regression of coefficients - no OpenFOAM source needed.
-  - Intrusive: POD-Galerkin / PG on FV operators - needs matrix/operator access (OpenFOAM C++
-    utility or re-assembly in Python); the apt install ships `openfoam2312-dev` so custom
-    applications can be compiled.
-- Stability/closure for convection-dominated flow (supremizer, stabilisation, eddy-viscosity).
-- Parametric sampling strategy (LHS / greedy) and the error metric against the full-order model.
+## 待共同确定的问题
+- 目标问题：什么物理问题 / 几何 / 参数？（例如：顶盖驱动方腔、圆柱尾流，以及 Re / 入口速度 / 几何的参数化）
+- 侵入式还是非侵入式 ROM：
+  - 非侵入式：POD（+ RBF / GP / 神经网络）对系数做回归，无需 OpenFOAM 源码。
+  - 侵入式：基于 FV 算子的 POD-Galerkin / PG，需要获取矩阵/算子（编写 OpenFOAM C++ 工具，或在
+    Python 中重新组装）；apt 安装包含 `openfoam2312-dev`，因此可以编译自定义应用。
+- 对流占主导流动的稳定化与闭合（supremizer、稳定化、涡粘修正）。
+- 参数采样策略（LHS / 贪心）以及相对全阶模型的误差指标。
 
-## Next steps once the technique is chosen
-1. Field reader (OpenFOAM fields -> numpy) with cell-volume weights.
-2. Snapshot generation workflow driven through the MCP tools (parameter sweep as jobs).
-3. Basis computation + ROM construction in `fvmrom/rom/`.
-4. Online solve, reconstruction to an OpenFOAM time directory (for ParaView), FOM-vs-ROM error report.
+## 技术路线确定后的下一步
+1. 场读取器（OpenFOAM 场 -> numpy），带单元体积权重。
+2. 通过 MCP 工具驱动的快照生成流程（参数扫描作为后台任务）。
+3. 在 `fvmrom/rom/` 中实现基计算与 ROM 构建。
+4. 在线求解，并重构为 OpenFOAM 时间目录（便于 ParaView 查看），输出 FOM 与 ROM 的误差报告。
