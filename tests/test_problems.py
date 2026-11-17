@@ -1,13 +1,16 @@
-import re
+﻿import re
 
 import numpy as np
 import pytest
 
-from fvmrom.config import Settings
+from fvmrom.core.config import Settings
 from fvmrom.foam import Cases
-from fvmrom.problems import Problem, get_problem
-from fvmrom.problems.cavity import CavityProblem
-from fvmrom.problems.cylinder import CylinderProblem
+from fvmrom.case_templates import Problem, get_problem
+from fvmrom.case_templates.cavity import CavityProblem
+from fvmrom.case_templates.cylinder import CylinderGeometry, CylinderProblem, block_mesh_dict
+
+#: block_mesh_dict() for the default geometry, before the parametrisation (regression)
+DEFAULT_MESH_SHA256 = "9340567d098c2f2d416ee8713e8679fd4fe5024594b3e227cd7b56d67e5b3c09"
 
 
 @pytest.fixture
@@ -171,3 +174,216 @@ def test_refuses_existing_case(cases):
     problem.write_case(cases, "taken", np.array([100.0]))
     with pytest.raises(FileExistsError):
         problem.write_case(cases, "taken", np.array([100.0]))
+
+def test_default_block_mesh_dict_is_unchanged():
+    import hashlib
+
+    text = block_mesh_dict()
+    assert hashlib.sha256(text.encode()).hexdigest() == DEFAULT_MESH_SHA256
+    assert block_mesh_dict(CylinderGeometry()) == text
+
+
+def test_cylinder_geometry_counts():
+    base = CylinderGeometry()
+    counts = base.counts()
+    assert counts["n_theta"] == 32 and counts["n_radial"] == 40
+    assert counts["n_inner"] == 32
+    assert counts["n_x_in"] == 48 and counts["n_x_out"] == 144 and counts["n_y_far"] == 48
+    assert counts["cells"] == 32768
+    assert _cell_count(block_mesh_dict(base)) == counts["cells"]
+
+    wide = CylinderGeometry(x_in=-15.0, x_out=40.0, y_far=20.0)
+    counts = wide.counts()
+    assert counts["n_x_in"] == 80 and counts["n_x_out"] == 240
+    assert counts["n_y_far"] == 112 and counts["n_inner"] == 32
+    assert _cell_count(block_mesh_dict(wide)) == counts["cells"]
+
+    fine = CylinderGeometry(res=1.5)
+    counts = fine.counts()
+    assert counts["n_theta"] == 48 and counts["n_radial"] == 60
+    assert counts["n_x_in"] == 72 and counts["n_x_out"] == 216
+    assert counts["n_inner"] == 48 and counts["n_y_far"] == 72
+    assert _cell_count(block_mesh_dict(fine)) == counts["cells"]
+
+    # the far-field spacing follows 0.15625/res, the ring resolution scales with res
+    assert wide.counts()["cells"] != base.counts()["cells"]
+    assert fine.counts()["cells"] != base.counts()["cells"]
+
+
+def test_cylinder_geometry_validation():
+    with pytest.raises(ValueError, match="res"):
+        CylinderGeometry(res=0.0)
+    with pytest.raises(ValueError, match="x_in"):
+        CylinderGeometry(x_in=-2.0)
+    with pytest.raises(ValueError, match="x_out"):
+        CylinderGeometry(x_out=2.0)
+    with pytest.raises(ValueError, match="y_far"):
+        CylinderGeometry(y_far=2.0)
+    with pytest.raises(ValueError, match="half_size"):
+        CylinderGeometry(half_size=0.4)
+
+
+def test_cylinder_problem_geometry(cases):
+    geometry = CylinderGeometry(res=0.5)
+    problem = CylinderProblem(geometry=geometry)
+    root = _write(problem, cases, "cyl/run_0000", 20.0)
+    mesh = (root / "system/blockMeshDict").read_text()
+    assert mesh == block_mesh_dict(geometry)
+    assert _cell_count(mesh) == geometry.counts()["cells"]
+    assert _cell_count(mesh) < 32768
+
+# -- transient case template ---------------------------------------------------------------
+
+from fvmrom.case_templates.cylinder_transient import (  # noqa: E402
+    CylinderTransientProblem,
+    TransientConfig,
+)
+
+
+def _transient_case(cases, config, case="cyl_transient/run_0000"):
+    problem = CylinderTransientProblem(config)
+    problem.write_case(cases, case)
+    return cases.path(case), problem
+
+
+def test_transient_case_files(cases):
+    config = TransientConfig(re=100.0, snapshot_dt=0.2, t_spin=2.0, t_end=4.0)
+    root, problem = _transient_case(cases, config)
+    assert problem.name == "cylinder_transient" and problem.fields == ("U", "p", "phi")
+    for rel in (
+        "system/controlDict",
+        "system/controlDict.spin",
+        "system/controlDict.prod",
+        "system/fvSchemes",
+        "system/fvSolution",
+        "system/setFieldsDict",
+        "system/blockMeshDict",
+        "constant/transportProperties",
+        "constant/turbulenceProperties",
+        "0/U",
+        "0/p",
+        "Allrun",
+        "run_0000.foam",
+    ):
+        assert (root / rel).is_file(), rel
+
+    assert float(_entry((root / "constant/transportProperties").read_text(), "nu")) == 0.01
+    assert "simulationType  laminar" in (
+        root / "constant/turbulenceProperties"
+    ).read_text()
+
+    spin = (root / "system/controlDict.spin").read_text()
+    prod = (root / "system/controlDict.prod").read_text()
+    for control in (spin, prod):
+        assert _entry(control, "application") == "pimpleFoam"
+        assert _entry(control, "writeFormat") == "ascii"
+        assert _entry(control, "writePrecision") == "10"
+        assert _entry(control, "adjustTimeStep") == "no"
+        assert _entry(control, "writeControl") == "timeStep"
+        assert float(_entry(control, "deltaT")) == pytest.approx(0.005)
+        assert _entry(control, "purgeWrite") == "0"
+        assert "type            forceCoeffs;" in control
+        assert "writeInterval   1;" in control  # every step for the force coefficients
+        assert "writeControl    timeStep;" in control
+    assert _entry(spin, "startFrom") == "startTime"
+    assert float(_entry(spin, "endTime")) == 2.0
+    assert int(spin.split("writeInterval")[1].split(";")[0]) == 400
+    assert _entry(prod, "startFrom") == "latestTime"
+    assert float(_entry(prod, "endTime")) == 4.0
+    assert int(prod.split("writeInterval")[1].split(";")[0]) == 40
+    assert (root / "system/controlDict").read_text() == spin
+
+    schemes = (root / "system/fvSchemes").read_text()
+    assert "default         backward;" in schemes
+    assert "div(phi,U)      Gauss linearUpwind grad(U);" in schemes
+    solution = (root / "system/fvSolution").read_text()
+    assert "nOuterCorrectors        1;" in solution
+    assert "nCorrectors             2;" in solution
+    assert "momentumPredictor       yes;" in solution
+    assert '"(p|pFinal)"' in solution and '"(U|UFinal)"' in solution
+
+    fields = (root / "system/setFieldsDict").read_text()
+    assert "box (0.6 -0.5 -1) (4 0.5 1)" in fields
+    assert "volVectorFieldValue U (1 0.1 0)" in fields
+
+    mesh = (root / "system/blockMeshDict").read_text()
+    assert mesh == block_mesh_dict(config.geometry)
+
+    allrun = (root / "Allrun").read_text()
+    assert allrun.startswith("#!/bin/bash") and "set -e" in allrun
+    assert "blockMesh > log.blockMesh" in allrun
+    assert "checkMesh > log.checkMesh" in allrun
+    assert 'grep -q "Failed" log.checkMesh' in allrun
+    assert "setFields > log.setFields" in allrun
+    assert "postProcess -func writeCellVolumes -time 0" in allrun
+    assert "cp system/controlDict.spin system/controlDict" in allrun
+    assert "cp system/controlDict.prod system/controlDict" in allrun
+    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 2
+    assert "pimpleFoam >> log.pimpleFoam" in allrun
+
+
+def test_transient_phases_degenerated(cases):
+    # t_spin == 0: one production run from time 0
+    config = TransientConfig(snapshot_dt=0.2, t_spin=0.0, t_end=1.0)
+    assert config.phases == ("production",)
+    root, _ = _transient_case(cases, config, "cyl_prod/run_0000")
+    assert not (root / "system/controlDict.spin").exists()
+    prod = (root / "system/controlDict.prod").read_text()
+    assert _entry(prod, "startFrom") == "startTime"
+    assert int(prod.split("writeInterval")[1].split(";")[0]) == 40
+    assert (root / "system/controlDict").read_text() == prod
+    allrun = (root / "Allrun").read_text()
+    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 1
+    assert "controlDict.spin" not in allrun
+
+    # t_spin == t_end: pilot, only the spin-up phase writes its final time
+    config = TransientConfig(snapshot_dt=0.2, t_spin=1.0, t_end=1.0)
+    assert config.phases == ("spin",)
+    root, _ = _transient_case(cases, config, "cyl_pilot/run_0000")
+    assert not (root / "system/controlDict.prod").exists()
+    spin = (root / "system/controlDict.spin").read_text()
+    assert _entry(spin, "startFrom") == "startTime"
+    assert int(spin.split("writeInterval")[1].split(";")[0]) == 200
+    allrun = (root / "Allrun").read_text()
+    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 1
+    assert "controlDict.prod" not in allrun
+    assert "pimpleFoam > log.pimpleFoam" in allrun
+
+
+def test_transient_timestep_rule():
+    base = TransientConfig(snapshot_dt=0.2, t_end=1.0)
+    assert base.timestep == pytest.approx(0.005)
+    assert base.snapshot_steps == 40 and base.spin_steps == 0
+
+    coarse = TransientConfig(geometry=CylinderGeometry(res=0.5), snapshot_dt=0.2, t_end=1.0)
+    assert coarse.timestep == pytest.approx(0.01)
+    assert coarse.snapshot_steps == 20
+
+    fine = TransientConfig(geometry=CylinderGeometry(res=1.5), snapshot_dt=0.2, t_end=1.0)
+    assert fine.timestep == pytest.approx(0.2 / 60.0)
+    assert fine.snapshot_steps == 60
+
+    explicit = TransientConfig(snapshot_dt=0.2, t_end=1.0, dt=0.02)
+    assert explicit.timestep == 0.02 and explicit.snapshot_steps == 10
+    with pytest.raises(ValueError, match="multiple"):
+        TransientConfig(snapshot_dt=0.2, t_end=1.0, dt=0.03).timestep
+
+
+def test_transient_validation():
+    with pytest.raises(ValueError, match="t_spin"):
+        TransientConfig(t_spin=2.0, t_end=1.0)
+    with pytest.raises(ValueError, match="multiple"):
+        TransientConfig(snapshot_dt=0.2, t_end=1.1)
+    with pytest.raises(ValueError, match="t_end"):
+        TransientConfig(t_end=0.0)
+    with pytest.raises(ValueError, match="perturb"):
+        TransientConfig(t_end=1.0, perturb=-0.1)
+    with pytest.raises(ValueError, match="snapshot_dt"):
+        TransientConfig(snapshot_dt=0.0, t_end=1.0)
+
+
+def test_transient_perturbation_can_be_disabled(cases):
+    config = TransientConfig(snapshot_dt=0.2, t_end=1.0, perturb=0.0)
+    root, _ = _transient_case(cases, config)
+    assert not (root / "system/setFieldsDict").exists()
+    assert "setFields" not in (root / "Allrun").read_text()

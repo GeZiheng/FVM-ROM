@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
-from ..config import Settings, get_settings
+from ..core.config import Settings, get_settings
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 

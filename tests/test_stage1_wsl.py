@@ -7,7 +7,7 @@ import uuid
 import numpy as np
 import pytest
 
-from fvmrom.config import Settings, get_settings
+from fvmrom.core.config import Settings, get_settings
 from fvmrom.foam import (
     Cases,
     Jobs,
@@ -19,7 +19,7 @@ from fvmrom.foam import (
     read_topology,
 )
 from fvmrom.foam.logs import parse_log
-from fvmrom.problems.cavity import CavityProblem
+from fvmrom.case_templates.cavity import CavityProblem
 
 pytestmark = pytest.mark.wsl
 

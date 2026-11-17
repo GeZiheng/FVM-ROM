@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ..config import Settings, get_settings
+from ..core.config import Settings, get_settings
 from .wsl import win_to_wsl
 
 MAX_READ_BYTES = 200_000

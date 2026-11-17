@@ -12,23 +12,31 @@ from .fields import (
     write_field,
 )
 from .jobs import Jobs
+from .mesh import MeshGeometry, phi_weights, read_geometry
 from .sweep import RunResult, collect_snapshots, run_sweep, validate_study
+from .transient import TransientRun, read_forces, run_transient
 from .wsl import Wsl, win_to_wsl, wsl_to_win
 
 __all__ = [
     "Cases",
     "FoamField",
     "Jobs",
+    "MeshGeometry",
     "MeshTopology",
     "RunResult",
+    "TransientRun",
     "Wsl",
     "collect_snapshots",
     "latest_time",
     "phi_divergence",
     "phi_vector",
+    "phi_weights",
     "read_field",
+    "read_forces",
+    "read_geometry",
     "read_topology",
     "run_sweep",
+    "run_transient",
     "validate_study",
     "win_to_wsl",
     "write_field",

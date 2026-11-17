@@ -12,8 +12,9 @@
 
 ```
 src/fvmrom/
-  config.py          配置（可通过环境变量覆盖）
-  params.py          参数采样（Re 的对数 / 线性采样）
+  core/              基础模块：配置与参数采样（不重导出，见 docs/architecture.md）
+    config.py        配置（可通过环境变量覆盖）
+    params.py        参数采样（Re 的对数 / 线性采样）
   foam/              Windows -> WSL2 的 OpenFOAM 访问层（MCP 与 ROM 代码共用）
     wsl.py           在 WSL 中运行 bash 脚本，路径映射 D:\ <-> /mnt/d
     commands.py      为单个 OpenFOAM 程序生成安全的运行脚本
@@ -21,15 +22,16 @@ src/fvmrom/
     jobs.py          后台任务（基于文件的状态）
     logs.py          求解器日志的尾部读取与残差解析
     tutorials.py     列出 / 复制 $FOAM_TUTORIALS 中的教程算例
-  problems/          算例生成：cavity、cylinder 的网格模板、边界条件与 Allrun
+  case_templates/    算例模板：cavity、cylinder 的网格模板、边界条件与 Allrun
   rom/               降阶模型：快照、POD 基、回归器（RBF / GPR / MLP）
-  mcp_server/        FastMCP stdio 服务（入口：fvmrom-mcp）
+.opencode/
+  mcps/openfoam/server.py  OpenFOAM MCP 服务脚本（stdio；harness 接入层，不属于 src/）
 cases/               OpenFOAM 算例（Windows 与 WSL 均可访问）
 data/                ROM 数据：快照、模型、报告（已被 git 忽略）
 docs/                架构、加权 POD、回归器与路线图
 tests/               测试
 scripts/             脚本：快照生成、拟合与评估、MCP 端到端冒烟测试
-opencode.json        向 OpenCode 注册 MCP 服务
+opencode.json        向 OpenCode 注册 MCP 服务（名称 openfoam）
 ```
 
 ## 安装
@@ -41,14 +43,22 @@ opencode.json        向 OpenCode 注册 MCP 服务
 uv sync                          # MCP 服务 + 开发工具（基础依赖含 numpy）
 uv sync --extra rom              # 额外安装 scipy、scikit-learn
 uv sync --extra rom --extra nn   # 再安装 torch，仅供 MLP 回归器使用
-uv run pytest                    # 共 162 个测试；-m "not wsl" 可跳过真实 WSL 集成测试
+uv run pytest                    # 共 220 个测试；-m "not wsl" 为 213，跳过真实 WSL 集成测试
 ```
 
-若 MCP 服务正占用 `.venv\Scripts\fvmrom-mcp.exe`，`uv run` 会在 sync 阶段失败，此时改用
-`uv run --no-sync ...`（例如 `uv run --no-sync python scripts/fit_and_eval.py ...`）。
+此前 MCP 服务是 console script，占用 `.venv\Scripts\openfoam-mcp.exe` 会让 `uv run` 在 sync 阶段失败；
+现在服务以 `python` 运行脚本，一般可直接 `uv run`。若仍遇到 sync 失败，再用 `uv run --no-sync ...`
+（例如 `uv run --no-sync python scripts/fit_and_eval.py ...`）。`.venv\Scripts\` 下若残留旧的
+`openfoam-mcp.exe`，下次 `uv sync` 会清理，不影响使用。
 
-OpenCode 会通过 `opencode.json` 自动加载该服务（名称：`openfoam`）。手动运行：
-`uv run fvmrom-mcp`。
+OpenCode 会通过 `opencode.json` 自动加载该服务（名称：`openfoam`，启动命令
+`uv run --project . python .opencode/mcps/openfoam/server.py`）。手动运行：
+`uv run python .opencode/mcps/openfoam/server.py`。
+
+命名约定：服务脚本放在 `.opencode/mcps/<功能>/server.py`，OpenCode 服务名为 `<功能>`，两者一一对应
+（当前 `<功能>` 为 `openfoam`；将来新增 ROM 服务即 `.opencode/mcps/rom/server.py`、服务名 `rom`）。
+服务脚本属于 harness 接入层，不放在 `src/`，也不注册 console script（没有 `<功能>-mcp` 命令，也没有
+`fvmrom.mcp_<功能>` 包）。
 
 ## 配置（环境变量）
 
@@ -75,7 +85,7 @@ OpenCode 会通过 `opencode.json` 自动加载该服务（名称：`openfoam`�
 非侵入式降阶：先用 `simpleFoam` 生成稳态流场快照，再做 POD 基（U、p、phi 分场；U、p 体积加权，
 phi 单位权重），最后用 RBF / GPR / MLP 回归器由 Re 预测基系数并重建场。
 
-- 算例：cavity（64×64，$\mathrm{Re} \in [100, 1000]$ 对数采样）、圆柱绕流（12 块 O 型网格、32768 单元，
+- 算例：cavity（64×64， $\mathrm{Re} \in [100, 1000]$ 对数采样）、圆柱绕流（12 块 O 型网格、32768 单元，
   $\mathrm{Re} \in [10, 40]$ 线性采样）
 - 物理：层流、稳态 `simpleFoam`，参数只有 Re
 
@@ -113,7 +123,7 @@ data/<problem>/<study>/report.json                  误差与学习曲线报告
 data/<problem>/<study>/models/*.pkl                 回归器模型
 ```
 
-ROM 算例的时间目录 `1/` 含 `U p phi U_fom p_fom U_err p_err`，误差为 $\text{ROM} - \text{FOM}$；在 ParaView 中打开其中的
+ROM 算例的时间目录 `1/` 含 `U p phi U_fom p_fom U_err p_err`，误差为 $\text{ROM} - \text{FOM}$ ；在 ParaView 中打开其中的
 `.foam` 文件即可同时对比 FOM、ROM 与误差场。
 
 关于 `samples.json`：cylinder 样本带 `cd`（取自 `forceCoeffs` 的最终 Cd，仅作合理性记录）；`n_faces` 是
@@ -138,16 +148,16 @@ ROM 算例的时间目录 `1/` 含 `U p phi U_fom p_fom U_err p_err`，误差为
 | cylinder | 2.2e-4 | 2.3e-5 | 9.2e-5 |
 
 - 重建 `phi` 的最大单元散度约 1e-11，与 FOM 同量级。
-- 30 样本时 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP / RBF 反而优于 GPR，$n \ge 12$ 后 GPR 领先。
+- 30 样本时 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP / RBF 反而优于 GPR， $n \ge 12$ 后 GPR 领先。
 - 圆柱的 Cd 随 Re 单调下降（Re=10.1 时 3.02，Re=39.4 时 1.63）。
 
 ### 已知限制
 
 - 质量守恒指标只保证 `phi` 的离散无散度，不保证与重建 U 的通量一致（阶段 2 再评估）。
 - `phi` 的内积用单位权重，仅适用于均匀网格（阶段 3 需要改）。
-- 圆柱域 $x \in [-10, 25]$、$y \in [-10, 10]$ （阻塞比约 5%），未做域 / 网格无关性验证。
+- 圆柱域 $x \in [-10, 25]$ 、 $y \in [-10, 10]$ （阻塞比约 5%），未做域 / 网格无关性验证。
 - Cd 仅作合理性记录；MLP 报告为单种子（种子 0），多种子仅用于均值与标准差的稳定性统计。
 - GPR 拟合时 sklearn 的 `ConvergenceWarning` 属正常现象。
 
-`uv run pytest` 运行全部 162 个测试；`uv run python scripts/smoke_mcp.py` 对 MCP 服务做端到端检查
-（cavity 算例）。
+`uv run pytest` 运行全部 220 个测试（`-m "not wsl"` 为 213）；`uv run python scripts/smoke_mcp.py`
+对 MCP 服务做端到端检查（cavity 算例）。

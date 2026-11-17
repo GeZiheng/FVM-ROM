@@ -9,7 +9,7 @@
     "servers": {
       "openfoam": {
         "type": "local",
-        "command": ["uv", "run", "--project", ".", "fvmrom-mcp"]
+        "command": ["uv", "run", "--project", ".", "python", ".opencode/mcps/openfoam/server.py"]
       }
     }
   }

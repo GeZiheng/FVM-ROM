@@ -1,11 +1,13 @@
 import pickle
+import sys
+import types
 import warnings
 
 import numpy as np
 import pytest
 
-from fvmrom.params import ParamSpace
-from fvmrom.rom.steady import SteadyROM
+from fvmrom.core.params import ParamSpace
+from fvmrom.rom.steady import SteadyROM, _migrate_module
 
 SPACE = ParamSpace(names=("mu",), lower=(1.0,), upper=(10.0,), log=(False,))
 
@@ -149,6 +151,52 @@ def test_load_old_model_file(tmp_path):
     assert rom.predict(np.array([5.0]))["U"].shape == (40, 3)
 
 
+def _legacy_pickle(payload, module, **classes):
+    """Serialise ``payload`` with classes recorded under an old module path."""
+    original = {name: cls.__module__ for name, cls in classes.items()}
+    stub = types.ModuleType(module)
+    for name, cls in classes.items():
+        setattr(stub, name, cls)
+        cls.__module__ = module
+    sys.modules[module] = stub
+    try:
+        return pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    finally:
+        del sys.modules[module]
+        for name, cls in classes.items():
+            cls.__module__ = original[name]
+
+
+def test_load_model_saved_before_module_move(tmp_path):
+    mu, snaps, volumes = synthetic(n=8)
+    rom = SteadyROM(SPACE, "rbf").fit(mu, snaps, volumes)
+    path = tmp_path / "legacy.pkl"
+    rom.save(path)
+    payload = pickle.loads(path.read_bytes())
+
+    blob = _legacy_pickle(payload, "fvmrom.params", ParamSpace=ParamSpace)
+    assert b"fvmrom.params" in blob and "fvmrom.params" not in sys.modules
+    path.write_bytes(blob)
+    loaded = SteadyROM.load(path)
+    assert loaded.space == SPACE
+    for name in snaps:
+        assert np.array_equal(loaded.predict(mu[:3])[name], rom.predict(mu[:3])[name])
+
+
+@pytest.mark.parametrize(
+    "module,expected",
+    [
+        ("fvmrom.params", "fvmrom.core.params"),
+        ("fvmrom.problems", "fvmrom.case_templates"),
+        ("fvmrom.problems.cylinder_transient", "fvmrom.case_templates.cylinder_transient"),
+        ("fvmrom.rom.pod", "fvmrom.rom.pod"),
+        ("numpy._core.numeric", "numpy._core.numeric"),
+    ],
+)
+def test_legacy_module_mapping(module, expected):
+    assert _migrate_module(module) == expected
+
+
 def test_n_modes_per_field():
     mu, snaps, volumes = synthetic()
     rom = SteadyROM(
@@ -179,3 +227,46 @@ def test_validation_errors():
         SteadyROM(SPACE, "rbf").fit(mu, snaps, volumes[:-1])
     with pytest.raises(ValueError):
         SteadyROM(SPACE, "kriging").fit(mu, snaps, volumes)
+
+def test_phi_weights_are_used_and_saved(tmp_path):
+    mu, snaps, volumes = synthetic()
+    n_phi = snaps["phi"].shape[1]
+    weights = np.linspace(0.5, 2.0, n_phi)
+    rom = SteadyROM(SPACE, "rbf").fit(mu, snaps, volumes, phi_weights=weights)
+    assert np.allclose(rom.pods_["phi"].weights, weights)
+    assert np.allclose(rom.phi_weights, weights)
+    # U and p keep the volume weights
+    assert np.allclose(rom.pods_["p"].weights, volumes)
+
+    path = tmp_path / "models" / "phiw.pkl"
+    rom.save(path)
+    loaded = SteadyROM.load(path)
+    assert np.allclose(loaded.phi_weights, weights)
+    assert np.allclose(loaded.pods_["phi"].weights, weights)
+    for name in snaps:
+        assert np.array_equal(rom.predict(mu[:3])[name], loaded.predict(mu[:3])[name])
+
+
+def test_phi_weights_default_is_unit(tmp_path):
+    mu, snaps, volumes = synthetic()
+    rom = SteadyROM(SPACE, "rbf").fit(mu, snaps, volumes)
+    assert rom.phi_weights is None
+    assert rom.pods_["phi"].weights is None
+    # default predictions do not depend on the option being present
+    plain = SteadyROM(SPACE, "rbf").fit(mu, snaps, volumes).predict(mu[:4])
+    for name in snaps:
+        assert np.array_equal(rom.predict(mu[:4])[name], plain[name])
+
+    path = tmp_path / "plain.pkl"
+    rom.save(path)
+    payload = pickle.loads(path.read_bytes())
+    assert payload["phi_weights"] is None
+    assert SteadyROM.load(path).phi_weights is None
+
+
+def test_phi_weights_length_is_checked():
+    mu, snaps, volumes = synthetic()
+    with pytest.raises(ValueError, match="phi weights"):
+        SteadyROM(SPACE, "rbf").fit(
+            mu, snaps, volumes, phi_weights=np.ones(snaps["phi"].shape[1] - 1)
+        )

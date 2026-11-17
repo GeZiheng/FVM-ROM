@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-PROJECT_ROOT = Path(os.environ.get("FVMROM_ROOT", Path(__file__).resolve().parents[2]))
+PROJECT_ROOT = Path(os.environ.get("FVMROM_ROOT", Path(__file__).resolve().parents[3]))
 
 
 @dataclass(frozen=True)

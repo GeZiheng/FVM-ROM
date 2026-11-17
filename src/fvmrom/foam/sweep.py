@@ -12,14 +12,14 @@ from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
-from ..config import Settings, get_settings
+from ..core.config import Settings, get_settings
 from .case import Cases
 from .fields import latest_time, phi_vector, read_field, read_topology
 from .jobs import Jobs
 from .logs import parse_log
 
-if TYPE_CHECKING:  # avoids a circular import: fvmrom.problems imports fvmrom.foam
-    from ..problems import Problem
+if TYPE_CHECKING:  # avoids a circular import: fvmrom.case_templates imports fvmrom.foam
+    from ..case_templates import Problem
 
 SOLVER_LOG = "log.simpleFoam"
 _STUDY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")

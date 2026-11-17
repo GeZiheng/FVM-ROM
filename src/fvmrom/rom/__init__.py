@@ -2,6 +2,7 @@
 
 from .evaluate import (
     evaluate_on_test,
+    flux_consistency,
     learning_curve,
     loo_cv,
     projection_error,
@@ -21,6 +22,7 @@ __all__ = [
     "SteadyROM",
     "WeightedPOD",
     "evaluate_on_test",
+    "flux_consistency",
     "learning_curve",
     "loo_cv",
     "make_regressor",

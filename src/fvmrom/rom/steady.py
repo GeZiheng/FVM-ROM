@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..params import ParamSpace
+from ..core.params import ParamSpace
 from .pod import WeightedPOD
 from .regressors import make_regressor
 
@@ -16,6 +16,12 @@ from .regressors import make_regressor
 VOLUME_WEIGHTED = frozenset({"U", "p"})
 
 _FORMAT_VERSION = 1
+
+#: modules whose classes moved, kept so that older pickles still load
+_LEGACY_MODULES = {
+    "fvmrom.params": "fvmrom.core.params",
+    "fvmrom.problems": "fvmrom.case_templates",
+}
 
 
 class SteadyROM:
@@ -43,18 +49,23 @@ class SteadyROM:
         self.pods_: dict[str, WeightedPOD] = {}
         self.models_: dict = {}
         self.shapes_: dict[str, tuple[int, ...]] = {}
+        self.phi_weights: np.ndarray | None = None
 
     def fit(
         self,
         mu: np.ndarray,
         snapshots: dict[str, np.ndarray],
         volumes: np.ndarray | None,
+        phi_weights: np.ndarray | None = None,
     ) -> "SteadyROM":
         mu, _ = _as_samples(mu, self.space)
         if not snapshots:
             raise ValueError("no snapshots given")
         z = self.space.to_unit(mu)
         volumes = None if volumes is None else np.asarray(volumes, dtype=float).reshape(-1)
+        self.phi_weights = (
+            None if phi_weights is None else np.asarray(phi_weights, dtype=float).reshape(-1)
+        )
         n = mu.shape[0]
 
         for name, snap in snapshots.items():
@@ -67,7 +78,7 @@ class SteadyROM:
                 )
             shape = data.shape[1:]
             flat = data.reshape(n, -1)
-            weights = _weights_for(name, flat.shape[1], volumes)
+            weights = _weights_for(name, flat.shape[1], volumes, self.phi_weights)
             pod = WeightedPOD(
                 weights, n_modes=self.n_modes.get(name), energy_tol=self.energy_tol
             ).fit(flat)
@@ -103,6 +114,7 @@ class SteadyROM:
             "pods": self.pods_,
             "models": self.models_,
             "shapes": self.shapes_,
+            "phi_weights": self.phi_weights,
         }
         with path.open("wb") as fh:
             pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -111,7 +123,7 @@ class SteadyROM:
     def load(cls, path: Path) -> "SteadyROM":
         """Read a model written by :meth:`save`; only load local files you trust."""
         with Path(path).open("rb") as fh:
-            payload = pickle.load(fh)
+            payload = _LegacyUnpickler(fh).load()
         if payload.get("version") != _FORMAT_VERSION:
             raise ValueError(f"{path}: unsupported ROM format {payload.get('version')!r}")
         _check_versions(path, payload.get("versions"))
@@ -125,7 +137,25 @@ class SteadyROM:
         rom.pods_ = payload["pods"]
         rom.models_ = payload["models"]
         rom.shapes_ = payload["shapes"]
+        rom.phi_weights = payload.get("phi_weights")
         return rom
+
+
+def _migrate_module(module: str) -> str:
+    """Rewrite a module path recorded before the ``core``/``case_templates`` move."""
+    for old, new in _LEGACY_MODULES.items():
+        if module == old:
+            return new
+        if module.startswith(old + "."):
+            return new + module[len(old):]
+    return module
+
+
+class _LegacyUnpickler(pickle.Unpickler):
+    """Unpickler that resolves the module paths stored in already saved models."""
+
+    def find_class(self, module: str, name: str):
+        return super().find_class(_migrate_module(module), name)
 
 
 def _dependency_versions() -> dict[str, str | None]:
@@ -180,8 +210,18 @@ def _as_samples(mu: np.ndarray, space: ParamSpace) -> tuple[np.ndarray, bool]:
 
 
 def _weights_for(
-    name: str, n_values: int, volumes: np.ndarray | None
+    name: str,
+    n_values: int,
+    volumes: np.ndarray | None,
+    phi_weights: np.ndarray | None = None,
 ) -> np.ndarray | None:
+    if name == "phi" and phi_weights is not None:
+        if phi_weights.size != n_values:
+            raise ValueError(
+                f"{name}: {n_values} values per snapshot cannot be weighted by "
+                f"{phi_weights.size} phi weights"
+            )
+        return phi_weights
     if volumes is None or name not in VOLUME_WEIGHTED:
         return None
     if n_values == volumes.size:

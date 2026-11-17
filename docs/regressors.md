@@ -27,7 +27,7 @@ flowchart LR
   \end{cases}
   $$
 
-  其中 $l_j$、$u_j$ 是第 $j$ 个参数的下界与上界（`ParamSpace` 的 `lower`/`upper`），对数参数在 $\ln \mu_j$ 上
+  其中 $l_j$ 、 $u_j$ 是第 $j$ 个参数的下界与上界（`ParamSpace` 的 `lower`/`upper`），对数参数在 $\ln \mu_j$ 上
   线性归一化。
 - 输出 `A`：形状 `(n, r)`，每个模态一列；每一列当作独立的标量目标，回归器不建模模态之间的相关性。
 - `SteadyROM` 对每个场各拟合一套"POD + 回归器"（`U`、`p`、`phi` 各有自己的模态数与系数），场的形状记录在
@@ -44,7 +44,7 @@ regressor.predict(Z, return_std=False)     # (n, r)，或 (mean, std) 二元组
 - 未拟合时 `predict` 抛出 `RuntimeError`。
 - 按名构造：`make_regressor(kind, **kw)`，大小写不敏感；`REGRESSOR_KINDS = {"rbf": RBFRegressor,
   "gpr": GPRRegressor, "mlp": MLPRegressor}`，未知名字抛 `ValueError` 并列出可选值。
-- 当 `A` 没有任何列（$r = 0$）时，三种回归器都构造空模型，`predict` 返回 `(n, 0)` 数组（GPR / MLP 在
+- 当 `A` 没有任何列（ $r = 0$ ）时，三种回归器都构造空模型，`predict` 返回 `(n, 0)` 数组（GPR / MLP 在
   `return_std=True` 时返回两个 `(n, 0)` 数组；RBF 不支持 `return_std`）。
 
 ## `RBFRegressor`
@@ -64,15 +64,15 @@ $$
 $$
 
 `degree=None` 时 SciPy 取该核允许的最小多项式次数，对 `thin_plate_spline` 是 1，即附加一个线性多项式项。
-设训练样本为 $\mathbf z_1, \dots, \mathbf z_n \in [0, 1]^d$ （单位立方体内的参数），$A_{ik}$ 为样本 $i$ 的
-第 $k$ 个 POD 系数，则第 $k$ 个系数（$k = 1, \dots, r$）的插值函数为
+设训练样本为 $\mathbf z_1, \dots, \mathbf z_n \in [0, 1]^d$ （单位立方体内的参数）， $A_{ik}$ 为样本 $i$ 的
+第 $k$ 个 POD 系数，则第 $k$ 个系数（ $k = 1, \dots, r$ ）的插值函数为
 
 $$
 a_k(\mathbf z) = \sum_{i=1}^{n} \lambda_{ik}\,\varphi\left(\lVert \mathbf z - \mathbf z_i \rVert\right)
 + \mathbf c_k^{\mathsf T} \begin{bmatrix} 1 \\ \mathbf z \end{bmatrix}
 $$
 
-其中 $\lambda_{ik}$ 是第 $k$ 列的核权重，$\mathbf c_k \in \mathbb{R}^{d+1}$ 是线性多项式项的系数，
+其中 $\lambda_{ik}$ 是第 $k$ 列的核权重， $\mathbf c_k \in \mathbb{R}^{d+1}$ 是线性多项式项的系数，
 $\lVert \cdot \rVert$ 为欧氏距离。
 
 权重由插值条件 $a_k(\mathbf z_i) = A_{ik}$ 与正交约束
@@ -93,9 +93,9 @@ $$
 P = [\mathbf 1\ \ Z]
 $$
 
-其中 $P \in \mathbb{R}^{n \times (d+1)}$，$Z$ 的第 $i$ 行为 $\mathbf z_i^{\mathsf T}$；$\Lambda_{ik} = \lambda_{ik}$，
-$C$ 的第 $k$ 行为 $\mathbf c_k^{\mathsf T}$。约束 $P^{\mathsf T}\Lambda = \mathbf 0$ 使多项式部分不被核项
-重复表示。$r$ 个系数列共用同一块矩阵（只做一次分解），每列各自有右端项与权重，因此 `fit` 只需构造一个
+其中 $P \in \mathbb{R}^{n \times (d+1)}$ ， $Z$ 的第 $i$ 行为 $\mathbf z_i^{\mathsf T}$ ； $\Lambda_{ik} = \lambda_{ik}$ ，
+$C$ 的第 $k$ 行为 $\mathbf c_k^{\mathsf T}$ 。约束 $P^{\mathsf T}\Lambda = \mathbf 0$ 使多项式部分不被核项
+重复表示。 $r$ 个系数列共用同一块矩阵（只做一次分解），每列各自有右端项与权重，因此 `fit` 只需构造一个
 `RBFInterpolator`。`smoothing > 0` 时 SciPy 在 $\Phi$ 的对角线上加 `smoothing`，此时不再严格经过样本点，
 变为平滑近似。
 
@@ -110,7 +110,7 @@ SciPy 会报错；当前算例的样本数远大于该下限。
 
 每个模态（`A` 的每一列）单独拟合一个 sklearn `GaussianProcessRegressor`，共 `r` 个模型，存于 `models_`。
 
-核函数（各向异性 Matérn，$\nu = 2.5$，加白噪声）：
+核函数（各向异性 Matérn， $\nu = 2.5$ ，加白噪声）：
 
 $$
 k(\mathbf{z}, \mathbf{z}') = \sigma_c^2 \left(1 + \sqrt{5}\,r + \frac{5}{3} r^2\right) e^{-\sqrt{5}\,r} + \sigma_n^2\, \delta_{\mathbf{z}\mathbf{z}'},
@@ -118,9 +118,9 @@ k(\mathbf{z}, \mathbf{z}') = \sigma_c^2 \left(1 + \sqrt{5}\,r + \frac{5}{3} r^2\
 r = \sqrt{\sum_{j=1}^{d} \frac{(z_j - z'_j)^2}{\ell_j^2}}
 $$
 
-其中 $\sigma_c^2$ 是 `ConstantKernel` 的常数因子（初始 `1.0`，边界 `(1e-3, 1e3)`），$\ell_j$ 是第 $j$ 维的
-`length_scale`（标量初值按输入维数复制成每维一个，即各向异性），$\sigma_n^2$ 是 `WhiteKernel` 的噪声水平
-（初始 `1e-6`），$\delta_{\mathbf{z}\mathbf{z}'}$ 只对完全相同的两个输入取 1。构造方式（`GPRRegressor.kernel`）：
+其中 $\sigma_c^2$ 是 `ConstantKernel` 的常数因子（初始 `1.0`，边界 `(1e-3, 1e3)`）， $\ell_j$ 是第 $j$ 维的
+`length_scale`（标量初值按输入维数复制成每维一个，即各向异性）， $\sigma_n^2$ 是 `WhiteKernel` 的噪声水平
+（初始 `1e-6`）， $\delta_{\mathbf{z}\mathbf{z}'}$ 只对完全相同的两个输入取 1。构造方式（`GPRRegressor.kernel`）：
 
 ```python
 ConstantKernel(1.0, (1e-3, 1e3)) * Matern(length_scale=每维一个值, length_scale_bounds=(1e-2, 1e2), nu=2.5)
@@ -159,7 +159,7 @@ PyTorch 全连接网络，输入 `d` 个参数，输出 `r` 个系数。依赖�
 | `weight_decay` | `0.0` | Adam 的权重衰减 |
 | `device` | `"cpu"` | 训练 / 推理设备 |
 
-网络结构：输入 $\mathbf{z}' \in \mathbb{R}^{d}$，隐层宽度 $H$ （`hidden`），隐层数 $L$ （`n_layers`）：
+网络结构：输入 $\mathbf{z}' \in \mathbb{R}^{d}$ ，隐层宽度 $H$ （`hidden`），隐层数 $L$ （`n_layers`）：
 
 $$
 \mathbf{h}^{(0)} = \mathbf{z}', \qquad
@@ -172,12 +172,12 @@ $$
 \operatorname{SiLU}(x) = \frac{x}{1 + e^{-x}}
 $$
 
-其中首层 $\mathbf{W}^{(1)} \in \mathbb{R}^{H \times d}$、中间层 $\mathbf{W}^{(l)} \in \mathbb{R}^{H \times H}$、输出层
-$\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$。即每层 `Linear(width, hidden) → SiLU`，最后接一个不加激活的
+其中首层 $\mathbf{W}^{(1)} \in \mathbb{R}^{H \times d}$ 、中间层 $\mathbf{W}^{(l)} \in \mathbb{R}^{H \times H}$ 、输出层
+$\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$ 。即每层 `Linear(width, hidden) → SiLU`，最后接一个不加激活的
 `Linear(hidden, r)`；全程 `float64`。
 
 `n_layers=2`、`hidden=64` 时宽度依次为 `d → 64 → 64 → r`，对应 `_build` 里的
-`Linear(d, 64) → SiLU → Linear(64, 64) → SiLU → Linear(64, r)`；$\hat{\mathbf{a}}'$ 是标准化空间中的输出。
+`Linear(d, 64) → SiLU → Linear(64, 64) → SiLU → Linear(64, r)`； $\hat{\mathbf{a}}'$ 是标准化空间中的输出。
 
 训练流程（每个种子一次）：
 
@@ -188,7 +188,7 @@ $\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$。即每层 `Linear(width, hidd
    a'_{ik} = \frac{a_{ik} - \bar{a}_k}{\hat{\sigma}_{a,k}}
    $$
 
-   其中 $\bar{z}_j$、$\hat{\sigma}_{z,j}$ 即 `z_mean_`、`z_std_`，$\bar{a}_k$、$\hat{\sigma}_{a,k}$ 即 `a_mean_`、
+   其中 $\bar{z}_j$ 、 $\hat{\sigma}_{z,j}$ 即 `z_mean_`、`z_std_`， $\bar{a}_k$ 、 $\hat{\sigma}_{a,k}$ 即 `a_mean_`、
    `a_std_`（训练集上按列求均值与标准差）；标准差为 0 的列替换为 1（`_safe_std`），避免除零。
 2. 在 `torch.random.fork_rng(devices=[])` 里 `torch.manual_seed(seed)`，构造网络并训练——不扰动全局 RNG。
 3. 损失为 MSE（`torch.nn.MSELoss`，对全部元素取平均）：
@@ -203,8 +203,8 @@ $\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$。即每层 `Linear(width, hidd
 
 预测：
 
-- `predict(Z)` 用训练时保存的 `z_mean_`/`z_std_` 标准化输入，返回集成平均（$\hat{a}'_{s,k}$ 是第 $s$ 个网络的
-  输出，$\mathcal{S}$ 是种子集合）：
+- `predict(Z)` 用训练时保存的 `z_mean_`/`z_std_` 标准化输入，返回集成平均（ $\hat{a}'_{s,k}$ 是第 $s$ 个网络的
+  输出， $\mathcal{S}$ 是种子集合）：
 
   $$
   \hat{a}_k = \hat{\sigma}_{a,k} \cdot \frac{1}{|\mathcal{S}|} \sum_{s \in \mathcal{S}} \hat{a}'_{s,k} + \bar{a}_k
@@ -272,6 +272,9 @@ $\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$。即每层 `Linear(width, hidd
 
 `SteadyROM.load(path)` 先 `pickle.load`，然后：
 
+- 反序列化用兼容 unpickler：旧模型里记录的 `fvmrom.params` / `fvmrom.problems` 会映射到
+  `fvmrom.core.params` / `fvmrom.case_templates`，模块搬家（见 `docs/architecture.md`）前保存的 `.pkl`
+  仍能加载。
 - `version` 不等于 `_FORMAT_VERSION` 时抛 `ValueError`（`unsupported ROM format ...`），不做兼容转换。
 - 比较 `versions` 与当前环境：`versions` 缺失或为空（M5 之前写的模型）时跳过；否则逐项比对，不一致时
   发 `RuntimeWarning`（形如 `numpy 1.26.4 -> 2.1.0`），但**仍然继续加载**。

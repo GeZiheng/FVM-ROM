@@ -1,10 +1,12 @@
 """End-to-end checks against the real WSL2 + OpenFOAM install (deselect with -m "not wsl")."""
 
+import importlib.util
 import time
+from pathlib import Path
 
 import pytest
 
-from fvmrom.config import Settings
+from fvmrom.core.config import Settings
 from fvmrom.foam import Cases, Jobs, Wsl
 from fvmrom.foam import tutorials as tut
 
@@ -25,7 +27,9 @@ def test_env(env):
 
 
 def test_cavity_workflow(env):
-    from fvmrom.mcp_server import server  # noqa: F401  (import check only)
+    server_path = Path(__file__).resolve().parents[1] / ".opencode" / "mcps" / "openfoam" / "server.py"
+    spec = importlib.util.spec_from_file_location("openfoam_mcp_server", server_path)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))  # import check only
 
     s, wsl, cases, jobs = env
     assert any(t.endswith("icoFoam/cavity/cavity") for t in tut.list_tutorials(wsl, "cavity"))

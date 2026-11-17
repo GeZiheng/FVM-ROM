@@ -17,18 +17,20 @@ from pathlib import Path
 import numpy as np
 from sklearn.exceptions import ConvergenceWarning
 
-from fvmrom.config import PROJECT_ROOT, get_settings
+from fvmrom.core.config import PROJECT_ROOT, get_settings
 from fvmrom.foam import (
     Cases,
     FoamField,
     latest_time,
+    phi_weights,
     read_field,
+    read_geometry,
     read_topology,
     validate_study,
     write_field,
 )
-from fvmrom.params import ParamSpace
-from fvmrom.problems import get_problem
+from fvmrom.core.params import ParamSpace
+from fvmrom.case_templates import get_problem
 from fvmrom.rom import SteadyROM
 from fvmrom.rom.evaluate import (
     evaluate_on_test,
@@ -58,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--learning-curve", action="store_true")
     p.add_argument("--sizes", default="5,8,12,16,20,30")
     p.add_argument("--mlp-seeds", type=int, default=5)
+    p.add_argument(
+        "--phi-weights",
+        choices=["unit", "area"],
+        default="unit",
+        help="weights of the phi inner product: unit, or V/|Sf|^2 from the mesh",
+    )
     args = p.parse_args()
     kinds = _list(args.regressors)
     if not kinds:
@@ -105,6 +113,8 @@ def main() -> None:
     n_modes = _n_modes(args.n_modes)
     cases = Cases(settings)
     topo = _topology(cases, f"{args.problem}_{study}")
+    geom = _geometry(cases, f"{args.problem}_{study}")
+    phi_w = _phi_weights(args, geom, snaps)
     test_cases = _test_cases(meta)
 
     print(
@@ -112,6 +122,7 @@ def main() -> None:
         f"{space.names} in [{space.lower}, {space.upper}], log {space.log}"
     )
     print(f"energy_tol {args.energy_tol:g}, mode caps {n_modes or 'none (energy only)'}")
+    print(f"phi weights: {args.phi_weights}")
 
     fitted: dict[str, SteadyROM] = {}
     rows = []
@@ -119,7 +130,10 @@ def main() -> None:
         rom = SteadyROM(space, kind, n_modes=n_modes, energy_tol=args.energy_tol)
         started = time.perf_counter()
         rom.fit(
-            mu[train], {name: values[train] for name, values in snaps.items()}, volumes
+            mu[train],
+            {name: values[train] for name, values in snaps.items()},
+            volumes,
+            phi_w,
         )
         fit_s = time.perf_counter() - started
         rom.save(data_dir / "models" / f"{kind}.pkl")
@@ -132,6 +146,8 @@ def main() -> None:
             {name: values[test] for name, values in snaps.items()},
             volumes,
             topo,
+            geom,
+            phi_w,
         )
         started = time.perf_counter()
         loo = loo_cv(
@@ -141,6 +157,7 @@ def main() -> None:
             mu[train],
             {name: values[train] for name, values in snaps.items()},
             volumes,
+            phi_w,
         )
         loo_s = time.perf_counter() - started
         fitted[kind] = rom
@@ -215,11 +232,27 @@ def main() -> None:
     else:
         print("\nphi divergence: not evaluated (no mesh topology found)")
 
+    consistency = _flux_report(rows)
+    if consistency is not None:
+        print(
+            "\nU-phi flux consistency (internal faces, relative): "
+            f"FOM mean {_sci(consistency['fom']['mean'])}, "
+            f"max {_sci(consistency['fom']['max'])}"
+        )
+        for kind, values in consistency["rom"].items():
+            ratio = values["ratio"]
+            print(
+                f"  {kind:<4} mean {_sci(values['mean'])}  max {_sci(values['max'])}  "
+                f"ratio {_sci(ratio)}"
+            )
+    else:
+        print("\nU-phi flux consistency: not evaluated (no mesh geometry found)")
+
     comparison = None
     if args.learning_curve:
         comparison = _compare(
             args, rows, fitted, space, mu, snaps, train, test, volumes, names,
-            pod_report, n_modes,
+            pod_report, n_modes, phi_w,
         )
 
     _print_acceptance(rows, pod_report, divergence, names)
@@ -256,6 +289,8 @@ def main() -> None:
             for row in rows
         },
         "phi_divergence": divergence,
+        "flux_consistency": consistency,
+        "phi_weights": args.phi_weights,
         "comparison": comparison,
     }
     report_path = data_dir / "report.json"
@@ -273,7 +308,8 @@ def main() -> None:
 
 
 def _compare(
-    args, rows, fitted, space, mu, snaps, train, test, volumes, names, pod_report, n_modes
+    args, rows, fitted, space, mu, snaps, train, test, volumes, names, pod_report, n_modes,
+    phi_weights_values=None,
 ) -> dict:
     sizes = [int(s) for s in _list(args.sizes)]
     curve = learning_curve(
@@ -286,6 +322,7 @@ def _compare(
         volumes,
         mlp_seeds=tuple(range(args.mlp_seeds)),
         progress=lambda kind, n: print(f"  learning curve {kind} n={n}", flush=True),
+        phi_weights=phi_weights_values,
         space=space,
         energy_tol=args.energy_tol,
         n_modes=n_modes,
@@ -321,6 +358,7 @@ def _compare(
             mu[test],
             {name: values[test] for name, values in snaps.items()},
             volumes,
+            phi_weights_values,
         )
         print("\nGPR uncertainty: Spearman rho of the predicted std vs the actual error")
         _table(
@@ -437,6 +475,23 @@ def _divergence_report(rows, topo) -> dict | None:
             row["kind"]: {
                 "max": row["test"]["phi_divergence"]["rom_max"],
                 "ok": row["test"]["phi_divergence"]["ok"],
+            }
+            for row in rows
+        },
+    }
+
+
+def _flux_report(rows) -> dict | None:
+    first = rows[0]["test"]["flux_consistency"]
+    if first is None:
+        return None
+    return {
+        "fom": {"mean": first["fom"]["mean"], "max": first["fom"]["max"]},
+        "rom": {
+            row["kind"]: {
+                "mean": row["test"]["flux_consistency"]["rom"]["mean"],
+                "max": row["test"]["flux_consistency"]["rom"]["max"],
+                "ratio": row["test"]["flux_consistency"]["ratio"],
             }
             for row in rows
         },
@@ -594,6 +649,30 @@ def _topology(cases: Cases, study_root: str):
     except FileNotFoundError:
         print(f"WARNING: no mesh in {case}; phi divergence is not evaluated")
         return None
+
+
+def _geometry(cases: Cases, study_root: str):
+    case = f"{study_root}/run_0000"
+    try:
+        return read_geometry(cases.path(case))
+    except FileNotFoundError:
+        return None
+
+
+def _phi_weights(args, geom, snaps) -> np.ndarray | None:
+    if args.phi_weights == "unit":
+        return None
+    if geom is None:
+        raise SystemExit(
+            "--phi-weights area needs the mesh in cases/<problem>_<study>/run_0000"
+        )
+    weights = phi_weights(geom)
+    n_phi = snaps["phi"].shape[1]
+    if weights.size != n_phi:
+        raise SystemExit(
+            f"phi weights have {weights.size} entries but the snapshots have {n_phi}"
+        )
+    return weights
 
 
 def _test_cases(meta: dict) -> list[str]:

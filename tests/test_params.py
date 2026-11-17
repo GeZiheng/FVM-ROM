@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import pytest
 
-from fvmrom.params import ParamSpace
+from fvmrom.core.params import ParamSpace
 
 def re_space() -> ParamSpace:
     return ParamSpace(names=("Re",), lower=(100.0,), upper=(1000.0,), log=(True,))

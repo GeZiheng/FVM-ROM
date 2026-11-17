@@ -4,11 +4,15 @@
 - [x] 项目骨架（uv、src 布局、测试）
 - [x] WSL2 <-> OpenFOAM 访问层
 - [x] OpenFOAM MCP 服务（18 个工具）：环境、教程、算例、运行（前台/后台、MPI）、日志
+- [x] MCP 服务脚本从 Python 包（`fvmrom.mcp_openfoam` + `openfoam-mcp` console script）迁到
+  `.opencode/mcps/openfoam/server.py`：`src/` 只保留 ROM 与 OpenFOAM 访问层，服务脚本归 harness 接入层
 - [x] ROM 技术路线讨论与确认（见下）
 - [x] 阶段 1（M1–M6）：参数空间与采样；ASCII 场读写与网格拓扑；批量采样调度器（并发、resume、停止/清理
   残留任务）；cavity 与 cylinder 算例生成；分场加权 POD；RBF/GPR/MLP 回归器；评估（测试集、投影下界、
   LOO-CV、学习曲线、`phi` 散度、GPR 不确定度相关性）；ROM 写回 OpenFOAM 时间目录（含
-  `U_fom/p_fom/U_err/p_err`，ParaView 可对比）。共 162 个测试通过。
+  `U_fom/p_fom/U_err/p_err`，ParaView 可对比）。当前共 220 个测试通过。
+- [x] 模块重组（纯重构，行为不变）：`fvmrom.config` / `fvmrom.params` → `fvmrom.core.config` /
+  `fvmrom.core.params`，`fvmrom.problems` → `fvmrom.case_templates`；旧 `.pkl` 通过兼容 unpickler 仍可加载。
 
 ## ROM 技术路线（2026-11-16 已确认）
 
@@ -34,7 +38,7 @@
   - 测试集 `U` 平均相对 L2 误差：cavity RBF 1.2e-3 / GPR 4.7e-5 / MLP 1.4e-3；cylinder RBF 2.2e-4 /
     GPR 2.3e-5 / MLP 9.2e-5。
   - 重建 `phi` 的最大单元散度约 1e-11，与 FOM 同量级（离散连续性得以保持）。
-  - 30 样本下 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP/RBF 优于 GPR，$n \ge 12$ 后 GPR 领先。
+  - 30 样本下 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP/RBF 优于 GPR， $n \ge 12$ 后 GPR 领先。
 - 之后扩展：边界条件参数化、多参数（留待后续）。
 - 计划：`.opencode/plans/20261116-stage1-steady-rom.md`
 
@@ -64,10 +68,12 @@
 - 阶段 3：几何参数化的具体方式；3D 汽车外流场是否纳入。
 - 侵入式 ROM 何时引入，以及采用什么形式（超降阶、稳定化、supremizer 等）。
 - 自适应采样（贪心加点，基于 GPR 方差）是否纳入阶段 1 之后的迭代。
-- ROM 专用 MCP 工具：阶段 1 不做（脚本 `generate_snapshots.py`、`fit_and_eval.py` 已覆盖流程，采样是长任务不适合工具调用，
-  且接口在阶段 2、3 会变）。阶段 2/3 视使用情况再评估；若要做，建议另起独立的 MCP 服务（例如 `fvmrom-rom-mcp`，
-  避免拖慢 `openfoam` 服务和加重 `fvmrom-mcp.exe` 被占用导致 `uv run` sync 失败的问题），只做薄封装，
-  第一批工具可以是 `list_studies`、`study_report`、`rom_predict`；采样仍走脚本和后台作业。
+- ROM 专用 MCP 工具：阶段 1 不做（脚本 `generate_snapshots.py`、`fit_and_eval.py` 已覆盖流程，采样是长任务
+  不适合工具调用，且接口在阶段 2、3 会变）。阶段 2/3 视使用情况再评估；若要做，建议另起独立的 MCP 服务：
+  `.opencode/mcps/rom/server.py`，服务名 `rom`——命名规则是目录 `.opencode/mcps/<功能>/` 与服务名 `<功能>`
+  一一对应，不再有 `<功能>-mcp` 命令和 `fvmrom.mcp_<功能>` 包；独立服务还能避免拖慢 `openfoam` 服务、
+  工具列表也不至于过长。只做薄封装，第一批工具可以是 `list_studies`、`study_report`、`rom_predict`；
+  采样仍走脚本和后台作业。
 
 ## 阶段 2 的前置事项
 - 补充评估 `U`–`phi` 的通量一致性指标（阶段 2 用 `phi` 推进对流项时需要）。

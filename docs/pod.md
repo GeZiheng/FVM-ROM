@@ -9,7 +9,7 @@
 
 ## 加权内积
 
-对长度为 $m$ 的场向量 $\mathbf{a}$, $\mathbf{b}$ 与逐分量权重 $w_i > 0$：
+对长度为 $m$ 的场向量 $\mathbf{a}$, $\mathbf{b}$ 与逐分量权重 $w_i > 0$ ：
 
 $$
 \langle \mathbf{a}, \mathbf{b} \rangle_W = \sum_{i=1}^{m} w_i a_i b_i,
@@ -43,7 +43,7 @@ flowchart LR
     RANK --> MODES["modes_ = Vt[:r] / sqrt(w)"]
 ```
 
-公式（快照矩阵 $\mathbf{X} \in \mathbb{R}^{n \times m}$，权重向量 $\mathbf{w}$）：
+公式（快照矩阵 $\mathbf{X} \in \mathbb{R}^{n \times m}$ ，权重向量 $\mathbf{w}$ ）：
 
 $$
 \bar{\mathbf{x}} = \frac{1}{n} \sum_{i=1}^{n} \mathbf{x}_i, \qquad
@@ -62,10 +62,10 @@ $$
 \langle \mathbf{\phi}_k, \mathbf{\phi}_l \rangle_W = \delta_{kl}
 $$
 
-- 符号对应：$\bar{\mathbf{x}}$ = `mean_`（算术平均，不是体积加权平均），$\mathbf{1}$ 是全 1 列向量，
-  $\mathbf{X}_c$ = 去均值后的快照，$\mathbf{S}$ = `S`，$\mathbf{V}^{\mathsf{T}}$ = `Vt`，$\Phi$ = `modes_`
-  （第 $k$ 行是模态 $\mathbf{\phi}_k$，即 $\mathbf{V}^{\mathsf{T}}$ 的前 $r$ 行），
-  `singular_values_` = 前 $r$ 个奇异值 $s_1, \dots, s_r$。
+- 符号对应： $\bar{\mathbf{x}}$ = `mean_`（算术平均，不是体积加权平均）， $\mathbf{1}$ 是全 1 列向量，
+  $\mathbf{X}_c$ = 去均值后的快照， $\mathbf{S}$ = `S`， $\mathbf{V}^{\mathsf{T}}$ = `Vt`， $\Phi$ = `modes_`
+  （第 $k$ 行是模态 $\mathbf{\phi}_k$ ，即 $\mathbf{V}^{\mathsf{T}}$ 的前 $r$ 行），
+  `singular_values_` = 前 $r$ 个奇异值 $s_1, \dots, s_r$ 。
 - `Xc * sqrt(w)` 是逐列乘 $\sqrt{w_j}$ （一维数组按列广播）；除以 $\sqrt{w_j}$ 换回原坐标后，模态在加权内积下
   仍是标准正交的。
 
@@ -83,7 +83,7 @@ r_{\text{rank}} = \left| \left\{ i : s_i > 10^{-14} s_1 \right\} \right|, \qquad
 r = \min\left( r_{\text{energy}},\ r_{\text{rank}},\ n_{\text{modes}} \right)
 $$
 
-其中 $\varepsilon$ = `energy_tol`，$n_{\text{modes}}$ = `n_modes`（`None` 时这一项不参与取小）。对应的代码在
+其中 $\varepsilon$ = `energy_tol`， $n_{\text{modes}}$ = `n_modes`（`None` 时这一项不参与取小）。对应的代码在
 `pod.py` 的 `_rank`：`np.cumsum(s**2) / np.sum(s**2)`、`np.searchsorted(energy, 1 - energy_tol, side="left") + 1`、
 `np.count_nonzero(s > s[0] * 1e-14)`。`side="left"` 取第一个满足 $E_j \ge 1-\varepsilon$ 的下标（0 起），
 加 1 后即保留的模态数。
@@ -93,7 +93,7 @@ $$
 
 ## 投影与重建
 
-`project(X)` 给出系数 $\mathbf{A}$ （形状 $(n, r)$），`reconstruct(A)` 换回场：
+`project(X)` 给出系数 $\mathbf{A}$ （形状 $(n, r)$ ），`reconstruct(A)` 换回场：
 
 $$
 A_{ik} = \sum_{j=1}^{m} w_j \left(X_{ij} - \bar{x}_j\right) \Phi_{kj},
@@ -107,7 +107,7 @@ $$
 \hat{\mathbf{X}} = \mathbf{A} \mathbf{\Phi} + \mathbf{1}\bar{\mathbf{x}}^{\mathsf{T}}
 $$
 
-其中 $\mathbf{W} = \operatorname{diag}(w_1, \dots, w_m)$；$\mathbf{A}$、$\hat{\mathbf{X}}$ 就是 `project` /
+其中 $\mathbf{W} = \operatorname{diag}(w_1, \dots, w_m)$ ； $\mathbf{A}$ 、 $\hat{\mathbf{X}}$ 就是 `project` /
 `reconstruct` 的返回值。代码写作 `(X - mean_) @ (w[:, None] * modes_.T)` 与 `A @ modes_ + mean_`。
 
 - `project` 要求 `X` 的列数等于 `mean_.size`；`reconstruct` 要求 `A` 的形状为 `(n, r)`。

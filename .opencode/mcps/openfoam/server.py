@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from ..config import get_settings
-from ..foam import Cases, Jobs, Wsl
-from ..foam import tutorials as tut
-from ..foam.commands import build_run_script
-from ..foam.logs import parse_log, tail
+from fvmrom.core.config import get_settings
+from fvmrom.foam import Cases, Jobs, Wsl
+from fvmrom.foam import tutorials as tut
+from fvmrom.foam.commands import build_run_script
+from fvmrom.foam.logs import parse_log, tail
 
 settings = get_settings()
 wsl = Wsl(settings)

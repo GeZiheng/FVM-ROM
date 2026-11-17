@@ -22,12 +22,20 @@
   `cases/<problem>_<study>/run_xxxx/`，ROM 算例在 `cases/<problem>_<study>_rom_<regressor>/run_xxxx/`。
   `FVMROM_DATA_DIR` 可改数据根目录。
 - 两个脚本入口：`scripts/generate_snapshots.py`（采样 + 生成快照）、`scripts/fit_and_eval.py`（拟合与评估）。
-- MCP 服务占用 `.venv\Scripts\fvmrom-mcp.exe` 时 `uv run` 会因 sync 失败而报错，改用
-  `uv run --no-sync ...`。
+- `src/fvmrom/` 分层：`core/`（`config` 配置、`params` 参数采样；`core/__init__.py` 刻意留空、不重导出，
+  避免只装基础依赖的 `foam` 与 MCP 被迫导入 scipy）、`foam/`（OpenFOAM 访问层）、`case_templates/`
+  （算例模板：cavity、cylinder、cylinder_transient）、`rom/`。导入用完整路径（如
+  `from fvmrom.core.config import ...`）；旧路径 `fvmrom.config` / `fvmrom.params` / `fvmrom.problems` 已不存在。
+- MCP 服务是 harness 接入层的独立脚本：`.opencode/mcps/<功能>/server.py`（当前 `openfoam`），由
+  `opencode.json` 以 `uv run --project . python .opencode/mcps/<功能>/server.py` 启动。它用绝对导入
+  （`from fvmrom.foam import ...`）调用库，不是 `src/` 里的包，也没有 console script。
+- 旧入口（`fvmrom.mcp_openfoam` 包、`openfoam-mcp.exe`）曾被 `uv run` 的 sync 阶段占用而报错；现在服务以
+  `python` 运行脚本，不再占用 `.venv\Scripts` 下的 exe，一般可直接 `uv run`。若仍遇到 sync 失败，再用
+  `uv run --no-sync ...`。`.venv\Scripts\` 下若残留旧的 `openfoam-mcp.exe`，下次 `uv sync` 会清理，不影响使用。
 - ESI v2312 的湍流字典是 `constant/turbulenceProperties`（不是 `momentumTransport`）；算例用 ASCII 格式
   （`fvmrom.foam.fields` 只读 ASCII）。`fvmrom.foam` 依赖 numpy。
 - `--study` 名需符合命名规则（见 README）。
-- `uv run pytest` 运行单元测试和真实 WSL 集成测试，当前共 162 个测试（`-m "not wsl"` 跳过 WSL 集成测试）。
+- `uv run pytest` 运行单元测试和真实 WSL 集成测试，当前共 220 个测试（`-m "not wsl"` 为 213，跳过 7 个 WSL 集成测试）。
 - `uv run python scripts/smoke_mcp.py` 对 MCP 服务做端到端测试（cavity 算例）。
 - 项目文档（README、AGENTS.md、docs/）使用中文撰写。
 

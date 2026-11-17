@@ -7,13 +7,15 @@ import asyncio
 import json
 import shutil
 import sys
+from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from fvmrom.config import get_settings
+from fvmrom.core.config import get_settings
 
 CASE = "_smoke_cavity"
+SERVER = Path(__file__).resolve().parents[1] / ".opencode" / "mcps" / "openfoam" / "server.py"
 
 
 async def call(session, name, **args):
@@ -25,7 +27,7 @@ async def call(session, name, **args):
 
 
 async def main():
-    params = StdioServerParameters(command=sys.executable, args=["-m", "fvmrom.mcp_server.server"])
+    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)])
     shutil.rmtree(get_settings().cases_dir / CASE, ignore_errors=True)
     async with stdio_client(params) as (r, w), ClientSession(r, w) as s:
         await s.initialize()

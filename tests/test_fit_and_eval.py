@@ -1,7 +1,8 @@
-"""Unit tests for the helpers of scripts/fit_and_eval.py (no OpenFOAM)."""
+﻿"""Unit tests for the helpers of scripts/fit_and_eval.py (no OpenFOAM)."""
 
 import importlib.util
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -94,3 +95,70 @@ def test_unknown_regressor_is_an_argparse_error(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         fit_and_eval.parse_args()
     assert exc.value.code == 2
+
+def test_phi_weights_option(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["fit_and_eval.py", "--problem", "cavity"])
+    assert fit_and_eval.parse_args().phi_weights == "unit"
+    monkeypatch.setattr(
+        sys, "argv", ["fit_and_eval.py", "--problem", "cavity", "--phi-weights", "area"]
+    )
+    assert fit_and_eval.parse_args().phi_weights == "area"
+    monkeypatch.setattr(
+        sys, "argv", ["fit_and_eval.py", "--problem", "cavity", "--phi-weights", "volume"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        fit_and_eval.parse_args()
+    assert exc.value.code == 2
+
+
+def _flux_geometry():
+    from fvmrom.foam import MeshGeometry
+
+    topo = MeshTopology(
+        owner=np.array([0, 0, 1]),
+        neighbour=np.array([1]),
+        patches={"left": ("patch", 1, 1), "right": ("patch", 2, 1)},
+        n_cells=2,
+    )
+    return MeshGeometry(
+        topo=topo,
+        cell_centres=np.array([[0.25, 0.5, 0.05], [1.0, 0.5, 0.05]]),
+        volumes=np.array([0.5, 1.0]),
+        face_centres=np.array([[0.5, 0.5, 0.05], [0.0, 0.5, 0.05], [1.5, 0.5, 0.05]]),
+        face_areas=np.array([[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0], [0.1, 0.0, 0.0]]),
+        lin_weights=np.array([2.0 / 3.0]),
+    )
+
+
+def test_phi_weights_helper():
+    args = SimpleNamespace(phi_weights="unit")
+    assert fit_and_eval._phi_weights(args, _flux_geometry(), {"phi": np.zeros((2, 3))}) is None
+
+    args = SimpleNamespace(phi_weights="area")
+    geom = _flux_geometry()
+    weights = fit_and_eval._phi_weights(args, geom, {"phi": np.zeros((2, 3))})
+    assert weights == pytest.approx([75.0, 50.0, 100.0])
+
+    with pytest.raises(SystemExit, match="mesh"):
+        fit_and_eval._phi_weights(args, None, {"phi": np.zeros((2, 3))})
+    with pytest.raises(SystemExit, match="entries"):
+        fit_and_eval._phi_weights(args, geom, {"phi": np.zeros((2, 4))})
+
+
+def test_flux_report():
+    def row(kind, mean, ratio):
+        consistency = {
+            "fom": {"mean": 0.01, "max": 0.05},
+            "rom": {"mean": mean, "max": 0.06},
+            "ratio": ratio,
+        }
+        return {"kind": kind, "test": {"flux_consistency": consistency}}
+
+    out = fit_and_eval._flux_report([row("rbf", 0.012, 1.2), row("gpr", 0.011, 1.1)])
+    assert out["fom"] == {"mean": 0.01, "max": 0.05}
+    assert out["rom"]["rbf"] == {"mean": 0.012, "max": 0.06, "ratio": 1.2}
+    assert out["rom"]["gpr"]["ratio"] == 1.1
+    assert (
+        fit_and_eval._flux_report([{"kind": "rbf", "test": {"flux_consistency": None}}])
+        is None
+    )

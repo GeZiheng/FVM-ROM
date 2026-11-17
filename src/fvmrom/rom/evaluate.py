@@ -14,6 +14,7 @@ import numpy as np
 from scipy.stats import spearmanr
 
 from ..foam.fields import MeshTopology, phi_divergence
+from ..foam.mesh import MeshGeometry
 from .pod import WeightedPOD
 from .regressors import GPRRegressor
 from .steady import VOLUME_WEIGHTED, SteadyROM
@@ -47,6 +48,56 @@ def projection_error(pod: WeightedPOD, X: np.ndarray) -> np.ndarray:
     return rel_l2_error(pod.reconstruct(pod.project(flat)), flat, pod.weights)
 
 
+def flux_consistency(
+    U: np.ndarray,
+    phi: np.ndarray,
+    geom: MeshGeometry,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """Per-snapshot ``||phi - I(U).Sf||_W / ||I(U).Sf||_W`` on the internal faces.
+
+    ``U`` is (n, n_cells, 3), ``phi`` (n, n_phi) and ``I(U)`` the OpenFOAM ``linear``
+    interpolation (:attr:`MeshGeometry.lin_weights`).  The boundary patches are left
+    out because their ``U`` values are not part of the snapshots.  ``weights`` follows
+    the ``phi`` layout (or covers the internal faces only).
+    """
+    topo = geom.topo
+    n_faces = topo.neighbour.size
+    U = np.asarray(U, dtype=float)
+    if U.ndim == 2:
+        U = U[None]
+    if U.ndim != 3 or U.shape[1:] != (topo.n_cells, 3):
+        raise ValueError(f"U: expected (n, {topo.n_cells}, 3), got {U.shape}")
+    phi = np.asarray(phi, dtype=float)
+    if phi.ndim == 1:
+        phi = phi[None]
+    if phi.ndim != 2 or phi.shape[0] != U.shape[0]:
+        raise ValueError(f"phi: expected (n, n_phi), got {phi.shape}")
+    if phi.shape[1] < n_faces:
+        raise ValueError(
+            f"phi: expected at least {n_faces} values per snapshot, got {phi.shape[1]}"
+        )
+    if n_faces == 0:
+        return np.zeros(phi.shape[0])
+    w = np.asarray(geom.lin_weights, dtype=float).reshape(-1)
+    if w.size != n_faces:
+        raise ValueError(f"{n_faces} internal faces but {w.size} interpolation weights")
+    own = np.asarray(topo.owner[:n_faces], dtype=np.int64)
+    nei = np.asarray(topo.neighbour, dtype=np.int64)
+    interp = w[:, None] * U[:, own] + (1.0 - w)[:, None] * U[:, nei]
+    flux = np.einsum("nfj,fj->nf", interp, geom.face_areas[:n_faces])
+    residual = phi[:, :n_faces] - flux
+    weight = _flux_weights(weights, n_faces, phi.shape[1])
+    scale = np.sqrt(weight)
+    numerator = np.linalg.norm(residual * scale, axis=1)
+    denominator = np.linalg.norm(flux * scale, axis=1)
+    out = np.full(numerator.shape, np.inf)
+    good = denominator > 0.0
+    out[good] = numerator[good] / denominator[good]
+    out[~good & (numerator == 0.0)] = 0.0
+    return out
+
+
 def retained_energy(pod: WeightedPOD, X: np.ndarray) -> float:
     """Fraction of the training energy (weighted, mean removed) kept by the POD."""
     flat = _as_flat(X)
@@ -70,6 +121,7 @@ def loo_cv(
     mu: np.ndarray,
     snapshots: dict[str, np.ndarray],
     volumes: np.ndarray | None = None,
+    phi_weights: np.ndarray | None = None,
 ) -> dict:
     """Leave-one-out CV: refit POD and regressor without sample i, predict sample i.
 
@@ -86,15 +138,16 @@ def loo_cv(
     names = list(snapshots)
     values = {name: _as_snapshots(snapshots[name], n, name) for name in names}
     errors = {name: [] for name in names}
+    extra = {} if phi_weights is None else {"phi_weights": phi_weights}
     for i in range(n):
         keep = np.arange(n) != i
         rom = make_rom().fit(
-            mu[keep], {name: values[name][keep] for name in names}, volumes
+            mu[keep], {name: values[name][keep] for name in names}, volumes, **extra
         )
         pred = rom.predict(mu[i : i + 1])
         for name in names:
             ref = values[name][i : i + 1]
-            weights = _field_weights(name, ref.shape[1:], volumes)
+            weights = _field_weights(name, ref.shape[1:], volumes, phi_weights)
             errors[name].append(float(rel_l2_error(pred[name], ref, weights)[0]))
     return {
         "n": n,
@@ -109,15 +162,28 @@ def evaluate_on_test(
     snap_test: dict[str, np.ndarray],
     volumes: np.ndarray | None = None,
     topo: MeshTopology | None = None,
+    geom: MeshGeometry | None = None,
+    phi_weights: np.ndarray | None = None,
 ) -> dict:
-    """Test-set errors per field, plus the ``phi`` divergence residual with ``topo``."""
+    """Test-set errors per field, plus divergence and U-``phi`` consistency.
+
+    ``topo`` adds the ``phi`` divergence residual, ``geom`` the U-``phi`` flux
+    consistency of the ROM and of the FOM baseline.
+    """
     mu_test = _as_batch(mu_test, rom.space.dim, "mu_test")
     n = mu_test.shape[0]
     pred = rom.predict(mu_test)
-    out: dict = {"n_test": n, "fields": {}, "phi_divergence": None}
+    out: dict = {
+        "n_test": n,
+        "fields": {},
+        "phi_divergence": None,
+        "flux_consistency": None,
+    }
     for name, ref in snap_test.items():
         ref = _as_snapshots(ref, n, name)
-        errors = rel_l2_error(pred[name], ref, _field_weights(name, ref.shape[1:], volumes))
+        errors = rel_l2_error(
+            pred[name], ref, _field_weights(name, ref.shape[1:], volumes, phi_weights)
+        )
         out["fields"][name] = _stats(errors)
 
     if topo is not None and "phi" in snap_test:
@@ -131,6 +197,20 @@ def evaluate_on_test(
             "limit": limit,
             "ok": bool(rom_max <= limit),
         }
+
+    if geom is not None and {"U", "phi"} <= set(snap_test):
+        fom = flux_consistency(
+            _as_snapshots(snap_test["U"], n, "U"),
+            _as_snapshots(snap_test["phi"], n, "phi"),
+            geom,
+            phi_weights,
+        )
+        rom = flux_consistency(pred["U"], pred["phi"], geom, phi_weights)
+        out["flux_consistency"] = {
+            "fom": _stats(fom),
+            "rom": _stats(rom),
+            "ratio": float(np.mean(rom) / np.mean(fom)) if np.mean(fom) > 0.0 else None,
+        }
     return out
 
 
@@ -139,6 +219,7 @@ def std_error_correlation(
     mu_test: np.ndarray,
     snap_test: dict[str, np.ndarray],
     volumes: np.ndarray | None = None,
+    phi_weights: np.ndarray | None = None,
 ) -> dict:
     """Spearman correlation between the GPR prediction std and the actual error.
 
@@ -159,7 +240,9 @@ def std_error_correlation(
         ref = _as_snapshots(ref, n, name)
         mean, std = model.predict(z, return_std=True)
         coeff = rom.pods_[name].project(ref.reshape(n, -1))
-        errors = rel_l2_error(pred[name], ref, _field_weights(name, ref.shape[1:], volumes))
+        errors = rel_l2_error(
+            pred[name], ref, _field_weights(name, ref.shape[1:], volumes, phi_weights)
+        )
         sample_std = np.sqrt(np.mean(std**2, axis=1))
         out["fields"][name] = {
             "n_modes": int(std.shape[1]),
@@ -179,6 +262,7 @@ def learning_curve(
     volumes: np.ndarray | None = None,
     mlp_seeds: Sequence[int] = (0, 1, 2, 3, 4),
     progress: Callable[[str, int], None] | None = None,
+    phi_weights: np.ndarray | None = None,
     **rom_kw,
 ) -> dict:
     """Error against the number of training samples, for each regressor.
@@ -221,13 +305,14 @@ def learning_curve(
                 {name: train_values[name][:n] for name in names},
                 volumes,
                 mu_test,
+                phi_weights,
             )
             rows.append(
                 {
                     "n": n,
                     "train_seconds": train_s,
                     "predict_seconds_per_sample": predict_s,
-                    "fields": _field_stats(pred, test_values, volumes),
+                    "fields": _field_stats(pred, test_values, volumes, phi_weights),
                 }
             )
             if progress is not None:
@@ -244,6 +329,7 @@ def learning_curve(
             mu_test,
             test_values,
             volumes,
+            phi_weights,
         )
     return out
 
@@ -257,6 +343,7 @@ def _mlp_stability(
     mu_test: np.ndarray,
     test_values: dict[str, np.ndarray],
     volumes: np.ndarray | None,
+    phi_weights: np.ndarray | None = None,
 ) -> dict:
     base_kw = dict(rom_kw.get("regressor_kw") or {})
     rows = []
@@ -269,8 +356,9 @@ def _mlp_stability(
                 mu_train[:n],
                 {name: train_values[name][:n] for name in train_values},
                 volumes,
+                phi_weights,
             )
-            stats = _field_stats(rom.predict(mu_test), test_values, volumes)
+            stats = _field_stats(rom.predict(mu_test), test_values, volumes, phi_weights)
             for name in per_seed:
                 per_seed[name].append(stats[name]["mean"])
         rows.append(
@@ -296,9 +384,12 @@ def _fit_and_time(
     snap_train: dict[str, np.ndarray],
     volumes: np.ndarray | None,
     mu_test: np.ndarray,
+    phi_weights: np.ndarray | None = None,
 ) -> tuple[SteadyROM, dict, float, float]:
     started = time.perf_counter()
-    rom = SteadyROM(regressor=kind, **rom_kw).fit(mu_train, snap_train, volumes)
+    rom = SteadyROM(regressor=kind, **rom_kw).fit(
+        mu_train, snap_train, volumes, phi_weights
+    )
     train_s = time.perf_counter() - started
     started = time.perf_counter()
     pred = rom.predict(mu_test)
@@ -306,10 +397,17 @@ def _fit_and_time(
     return rom, pred, train_s, predict_s
 
 
-def _field_stats(pred: dict, snapshots: dict, volumes: np.ndarray | None) -> dict:
+def _field_stats(
+    pred: dict,
+    snapshots: dict,
+    volumes: np.ndarray | None,
+    phi_weights: np.ndarray | None = None,
+) -> dict:
     out = {}
     for name, ref in snapshots.items():
-        errors = rel_l2_error(pred[name], ref, _field_weights(name, ref.shape[1:], volumes))
+        errors = rel_l2_error(
+            pred[name], ref, _field_weights(name, ref.shape[1:], volumes, phi_weights)
+        )
         out[name] = {"mean": float(np.mean(errors)), "max": float(np.max(errors))}
     return out
 
@@ -361,8 +459,16 @@ def _as_batch(mu: np.ndarray, dim: int, name: str) -> np.ndarray:
 
 
 def _field_weights(
-    name: str, shape: tuple[int, ...], volumes: np.ndarray | None
+    name: str,
+    shape: tuple[int, ...],
+    volumes: np.ndarray | None,
+    phi_weights: np.ndarray | None = None,
 ) -> np.ndarray | None:
+    if name == "phi" and phi_weights is not None:
+        w = np.asarray(phi_weights, dtype=float).reshape(-1)
+        if not shape or w.size != shape[0]:
+            raise ValueError(f"{name}: cannot weight {shape} values with {w.size} phi weights")
+        return w
     if volumes is None or name not in VOLUME_WEIGHTED:
         return None
     volumes = np.asarray(volumes, dtype=float).reshape(-1)
@@ -373,6 +479,21 @@ def _field_weights(
     if len(shape) != 1:
         raise ValueError(f"{name}: unexpected snapshot shape {shape}")
     return volumes
+
+
+def _flux_weights(
+    weights: np.ndarray | None, n_internal: int, n_phi: int
+) -> np.ndarray:
+    if weights is None:
+        return np.ones(n_internal)
+    w = np.asarray(weights, dtype=float).reshape(-1)
+    if w.size == n_phi:
+        w = w[:n_internal]
+    if w.size != n_internal:
+        raise ValueError(
+            f"expected {n_internal} internal-face weights (or {n_phi} for phi), got {w.size}"
+        )
+    return w
 
 
 def _expand_weights(weights: np.ndarray | None, shape: tuple[int, ...]) -> np.ndarray:

@@ -18,9 +18,6 @@ nn = [
     "torch>=2.2",
 ]
 
-[project.scripts]
-fvmrom-mcp = "fvmrom.mcp_server.server:main"
-
 [dependency-groups]
 dev = [
     "pytest>=8",

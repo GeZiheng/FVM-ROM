@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ..config import Settings, get_settings
+from ..core.config import Settings, get_settings
 from .case import Cases
 from .commands import build_run_script
 from .logs import tail

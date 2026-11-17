@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 from ..foam import Cases
-from ..params import ParamSpace
+from ..core.params import ParamSpace
 
 #: Fields written to the snapshots, in this order.
 FIELDS = ("U", "p", "phi")

@@ -1,10 +1,11 @@
-import numpy as np
+﻿import numpy as np
 import pytest
 
-from fvmrom.foam import MeshTopology
-from fvmrom.params import ParamSpace
+from fvmrom.foam import MeshGeometry, MeshTopology
+from fvmrom.core.params import ParamSpace
 from fvmrom.rom.evaluate import (
     evaluate_on_test,
+    flux_consistency,
     learning_curve,
     loo_cv,
     projection_error,
@@ -228,3 +229,116 @@ def test_learning_curve_mlp_stability():
             assert curve_row["fields"][name]["mean"] == pytest.approx(
                 row["per_seed"][name]["values"][0]
             )
+
+# -- U-phi flux consistency ----------------------------------------------------------------
+
+def _flux_geometry():
+    """Three cells in a row: two internal faces at x=1 and x=2, unit-spaced."""
+    topo = MeshTopology(
+        owner=np.array([0, 1, 0, 2]),
+        neighbour=np.array([1, 2]),
+        patches={"left": ("patch", 2, 1), "right": ("patch", 3, 1)},
+        n_cells=3,
+    )
+    return MeshGeometry(
+        topo=topo,
+        cell_centres=np.array([[0.5, 0.5, 0.05], [1.5, 0.5, 0.05], [2.5, 0.5, 0.05]]),
+        volumes=np.full(3, 0.1),
+        face_centres=np.array(
+            [[1.0, 0.5, 0.05], [2.0, 0.5, 0.05], [0.0, 0.5, 0.05], [3.0, 0.5, 0.05]]
+        ),
+        face_areas=np.array(
+            [[0.1, 0.0, 0.0], [0.1, 0.0, 0.0], [-0.1, 0.0, 0.0], [0.1, 0.0, 0.0]]
+        ),
+        lin_weights=np.array([0.5, 0.5]),
+    )
+
+
+def _flux_fields():
+    """U and the phi that is exactly its linear interpolation on the internal faces."""
+    U = np.zeros((2, 3, 3))
+    U[0, :, 0] = [1.0, 2.0, 3.0]
+    U[1, :, 0] = [0.5, 1.0, 1.5]
+    flux = np.array([[0.15, 0.25], [0.075, 0.125]])
+    phi = np.concatenate([flux, np.zeros((2, 2))], axis=1)
+    return U, phi
+
+
+def test_flux_consistency_is_zero_for_exact_interpolation():
+    geom = _flux_geometry()
+    U, phi = _flux_fields()
+    assert np.allclose(flux_consistency(U, phi, geom), 0.0, atol=1e-15)
+    # one snapshot at a time gives the same numbers
+    assert np.allclose(flux_consistency(U[0], phi[0], geom), [0.0])
+    # the snapshot axis is independent of the face axis
+    assert np.allclose(flux_consistency(np.repeat(U, 3, axis=0), np.repeat(phi, 3, axis=0), geom), 0.0)
+
+
+def test_flux_consistency_scales_with_the_perturbation():
+    geom = _flux_geometry()
+    U, phi = _flux_fields()
+    perturbation = np.array([1.0, 2.0, 0.0, 0.0])
+    scale = np.linalg.norm([1.0, 2.0]) / np.linalg.norm(phi[:, :2], axis=1)
+    for delta in (1e-3, 2e-3):
+        value = flux_consistency(U, phi + delta * perturbation, geom)
+        assert value == pytest.approx(delta * scale)
+
+
+def test_flux_consistency_weights():
+    geom = _flux_geometry()
+    U, phi = _flux_fields()
+    delta = 1e-3
+    perturbed = phi + delta * np.array([1.0, 2.0, 0.0, 0.0])
+    weights = np.array([1.0, 4.0])
+    scale = delta * np.sqrt(17.0) / np.sqrt(
+        (weights * phi[:, :2] ** 2).sum(axis=1)
+    )
+    assert flux_consistency(U, perturbed, geom, weights) == pytest.approx(scale)
+    # the full phi layout is accepted: the patch weights are simply ignored
+    full = np.array([1.0, 4.0, 9.0, 9.0])
+    assert flux_consistency(U, perturbed, geom, full) == pytest.approx(scale)
+
+
+def test_flux_consistency_validation():
+    geom = _flux_geometry()
+    U, phi = _flux_fields()
+    with pytest.raises(ValueError, match="expected \\(n, 3, 3\\)"):
+        flux_consistency(U[:, :2], phi, geom)
+    with pytest.raises(ValueError, match="phi"):
+        flux_consistency(U, phi[:, :1], geom)
+    with pytest.raises(ValueError, match="weights"):
+        flux_consistency(U, phi, geom, np.ones(3))
+
+
+def _flux_data(mu):
+    x = np.array([0.0, 1.0, 2.0])
+    U = np.zeros((mu.size, 3, 3))
+    U[:, :, 0] = np.cos(mu[:, None] / 500.0) * (1.0 + x)[None, :]
+    U[:, :, 1] = 1e-3 * np.sin(mu[:, None] / 300.0) * x[None, :]
+    flux = 0.1 * (0.5 * (U[:, :2, 0] + U[:, 1:, 0]))
+    phi = np.concatenate([flux, np.zeros((mu.size, 2))], axis=1)
+    p = 1e-3 * mu[:, None] * (1.0 + x)[None, :]
+    return {"U": U, "p": p, "phi": phi}
+
+
+def test_evaluate_on_test_reports_flux_consistency():
+    geom = _flux_geometry()
+    volumes = np.full(3, 0.1)
+    mu = np.linspace(100.0, 1000.0, 8)
+    rom = SteadyROM(SPACE, "rbf").fit(mu, _flux_data(mu), volumes)
+
+    mu_test = np.array([250.0, 750.0])
+    test_snaps = _flux_data(mu_test)
+    test_snaps["phi"] = test_snaps["phi"] + 1e-3 * np.array(
+        [[1.0, 2.0, 0.0, 0.0], [-1.0, 1.0, 0.0, 0.0]]
+    )
+    out = evaluate_on_test(rom, mu_test, test_snaps, volumes, geom=geom)
+
+    consistency = out["flux_consistency"]
+    assert consistency["fom"]["mean"] > 0.0
+    assert consistency["rom"]["mean"] > 0.0
+    assert consistency["rom"]["max"] >= consistency["rom"]["mean"]
+    assert consistency["ratio"] == pytest.approx(
+        consistency["rom"]["mean"] / consistency["fom"]["mean"]
+    )
+    assert evaluate_on_test(rom, mu_test, test_snaps, volumes)["flux_consistency"] is None

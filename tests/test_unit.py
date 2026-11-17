@@ -2,11 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from fvmrom.config import PROJECT_ROOT, Settings
+from fvmrom.core.config import PROJECT_ROOT, Settings
 from fvmrom.foam.case import Cases, safe_join
 from fvmrom.foam.commands import build_run_script, validate_app
 from fvmrom.foam.logs import parse_log
 from fvmrom.foam.wsl import win_to_wsl, wsl_to_win
+
+
+def test_project_root_is_repository_root():
+    assert (PROJECT_ROOT / "pyproject.toml").is_file()
+    assert (PROJECT_ROOT / "src" / "fvmrom").is_dir()
 
 
 def test_settings_data_dir(monkeypatch, tmp_path):

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ..foam import Cases
-from ..params import ParamSpace
+from ..core.params import ParamSpace
 from . import (
     FIELDS,
     allrun,

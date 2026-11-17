@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fvmrom.config import Settings
+from fvmrom.core.config import Settings
 from fvmrom.foam import (
     Cases,
     FoamField,
@@ -19,7 +19,7 @@ from fvmrom.foam import (
     write_field,
 )
 from fvmrom.foam.sweep import _check_case_path, _finished, _read_cd
-from fvmrom.params import ParamSpace
+from fvmrom.core.params import ParamSpace
 
 SPACE = ParamSpace(names=("a",), lower=(1.0,), upper=(2.0,), log=(False,))
 SOLVER_LOG = "log.simpleFoam"

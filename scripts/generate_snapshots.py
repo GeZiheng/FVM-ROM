@@ -9,9 +9,9 @@ from __future__ import annotations
 import argparse
 import time
 
-from fvmrom.config import get_settings
+from fvmrom.core.config import get_settings
 from fvmrom.foam import RunResult, collect_snapshots, run_sweep, validate_study
-from fvmrom.problems import get_problem
+from fvmrom.case_templates import get_problem
 
 
 def parse_args() -> argparse.Namespace:
