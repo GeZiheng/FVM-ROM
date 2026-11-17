@@ -1,14 +1,40 @@
 # 架构
 
+```mermaid
+flowchart LR
+    subgraph WIN["Windows 宿主"]
+        direction TB
+        AGENT["OpenCode 智能体"]
+        MCP["fvmrom-mcp<br/>(MCP 服务, stdio)"]
+        SCRIPTS["scripts/*.py<br/>generate_snapshots / fit_and_eval"]
+        ROM["fvmrom.params / problems / rom<br/>(numpy, scipy, sklearn, torch)"]
+        FOAM["fvmrom.foam<br/>Wsl · Cases · Jobs · sweep · fields"]
+        DATA[("cases/ 与 data/<br/>D:\Projects\FVM-ROM")]
+
+        AGENT -- stdio --> MCP
+        MCP --> FOAM
+        SCRIPTS --> ROM
+        ROM --> FOAM
+        FOAM -- "读写（ASCII 场、快照、模型）" --> DATA
+    end
+
+    subgraph WSL["WSL2 (Ubuntu)"]
+        direction TB
+        BASH["bash 脚本<br/>source OpenFOAM bashrc"]
+        APPS["blockMesh / checkMesh / simpleFoam / mpirun"]
+        MNT[("/mnt/d/Projects/FVM-ROM/<br/>cases/ 与 data/")]
+
+        BASH --> APPS
+        APPS -- 读写 --> MNT
+    end
+
+    FOAM -- "脚本文件<br/>wsl.exe --exec bash" --> BASH
+    DATA <-. "同一目录（跨系统共享）" .-> MNT
 ```
-Windows                                         WSL2 (Ubuntu)
--------                                         -------------
-OpenCode 智能体 --stdio--> fvmrom-mcp
-                              |  fvmrom.foam.Wsl
-ROM 代码 (numpy/scipy/...) ---+--> 脚本文件 --wsl.exe --exec bash--> source OpenFOAM bashrc
-        |                                                             blockMesh / 求解器 / mpirun
-        +--- 读写 cases/ 和 data/  <======= /mnt/d/Projects/FVM-ROM/... =======+
-```
+
+两个入口并列，都依赖共享的 `fvmrom.foam`：MCP 服务面向智能体的交互调试；ROM 脚本和库（采样、POD、回归、评估）
+直接导入 `fvmrom.foam`，**不经过 MCP 进程**。`fvmrom.foam` 通过脚本文件驱动 WSL 里的 OpenFOAM，并在 Windows 侧
+直接读写 `cases/` 与 `data/`（WSL 中对应 `/mnt/d/Projects/FVM-ROM/...`）。
 
 ## 设计决策
 
@@ -50,7 +76,7 @@ ROM 代码 (numpy/scipy/...) ---+--> 脚本文件 --wsl.exe --exec bash--> sourc
   - `run_sweep`：并发执行各算例的 `./Allrun`，通过 `Jobs.status` 轮询进度，用 `parse_log` 判定收敛
     并要求 `V` 场存在；支持 `resume`；`cases`/`jobs` 可注入便于测试；重写已有算例前先逐段校验路径一致，
     并调用 `Jobs.stop_case` 停掉残留任务；`finally` 中停止本次启动的任务，停止失败抛 `RuntimeError`
-    并列出 job id（`stop` 因尚无 pid 失败时先 `wait_pid` ≤20 s 再重试）。
+    并列出 job id（`stop` 因尚无 pid 失败时先 `wait_pid` 不超过 $20$ s 再重试）。
   - `collect_snapshots`：写出 `snapshots.npz` 与 `samples.json`，逐一比较各样本的 owner/neighbour/patches
     以确保拓扑一致；`n_faces` 取 phi 向量长度；为每个算例写 `<算例名>.foam` 便于 ParaView 打开。
     cylinder 的阻力系数 `cd` 取 `postProcessing/forceCoeffs` 下数值最大时间目录的 `coefficient.dat`
@@ -61,19 +87,18 @@ ROM 代码 (numpy/scipy/...) ---+--> 脚本文件 --wsl.exe --exec bash--> sourc
 - `fvmrom.foam.logs`：FPE 判定改为行首匹配 `^Floating point exception`，避免把启动 banner
   `trapFpe: Floating point exception trapping enabled` 误判为崩溃。
 - `fvmrom.problems`：`Problem` 协议（`name`、`space`、`fields`、`write_case`）与 `get_problem`，内置两个：
-  - `cavity`：64×64×1，`nu = 1/Re`，`pRefCell 0`，SIMPLEC（`consistent yes`）。
-  - `cylinder`：D=1，12 块 O 型网格、32768 单元，域 x∈[-10,25]、y∈[-10,10]；inlet 固定速度、outlet 固定压力、
+  - `cavity`：64×64×1，$\nu = 1/\mathrm{Re}$，`pRefCell 0`，SIMPLEC（`consistent yes`）。
+  - `cylinder`：$D = 1$，12 块 O 型网格、32768 单元，域 $x \in [-10, 25]$、$y \in [-10, 10]$；inlet 固定速度、outlet 固定压力、
     上下 `slip`、圆柱 `noSlip`，并输出 `forceCoeffs`。
   两者都按 ESI v2312 的写法：湍流在 `constant/turbulenceProperties`（`simulationType laminar`）、
   物性在 `constant/transportProperties`；`Allrun` 依次执行 `blockMesh`、`checkMesh`（日志含 `Failed` 则失败）、
   `simpleFoam`、`postProcess -func writeCellVolumes -latestTime`。
 - `fvmrom.rom`：
-  - `WeightedPOD`：加权内积下做瘦 SVD，均值取算术平均，模态 `modes_ = vt / sqrt(w)`；按 `energy_tol`
-    或 `n_modes` 截断；`weights` 为只读属性，旧 pickle 经 `__setstate__` 兼容。
-  - `regressors`：`RBFRegressor`（薄板样条，`smoothing=0`）、`GPRRegressor`（每模态一个 GPR，各向异性
-    Matern + WhiteKernel，`normalize_y=True`，`n_restarts=0`，支持 `return_std`）、`MLPRegressor`
-    （PyTorch，2 隐层×64、SiLU、输入输出标准化，Adam 1000 步 + L-BFGS 200 步，训练包在
-    `torch.random.fork_rng(devices=[])` 内）；`make_regressor`/`REGRESSOR_KINDS` 按名构造。
+  - `WeightedPOD`：加权内积下做瘦 SVD，按 `energy_tol` 或 `n_modes` 截断，`project`/`reconstruct` 完成
+    系数与场的互转。内积权重、公式与截断规则见 `docs/pod.md`。
+  - `regressors`：`RBFRegressor` / `GPRRegressor` / `MLPRegressor` 三项，统一接口
+    `fit(Z, A)` / `predict(Z, return_std=False)`，`make_regressor` 按名构造（`REGRESSOR_KINDS`）。
+    算法、超参与 `.pkl` 存储格式见 `docs/regressors.md`。
   - `SteadyROM`：U、p 用体积权重，phi 用单位权重；`fit`/`predict`/`save`/`load`；`save` 记录依赖版本，
     `load` 发现版本不一致发 `RuntimeWarning`（pickle 只应加载本地可信文件）。
   - `evaluate`：`rel_l2_error`、`projection_error`、`retained_energy`、`loo_cv`（每折重做 POD 与回归）、
@@ -82,9 +107,32 @@ ROM 代码 (numpy/scipy/...) ---+--> 脚本文件 --wsl.exe --exec bash--> sourc
 
 ### 数据流
 
-```
-ParamSpace.sample -> problems.write_case -> sweep.run_sweep -> collect_snapshots
-  -> data/<problem>/<study>/snapshots.npz -> SteadyROM.fit -> evaluate -> report.json / models/*.pkl
+```mermaid
+flowchart TD
+    subgraph GEN["scripts/generate_snapshots.py：生成快照"]
+        direction TB
+        S1["ParamSpace.sample<br/>Sobol 采样，前 n_train 个训练、后 n_test 个测试"]
+        S2["problems.write_case<br/>每个样本写一个算例 cases/problem_study/run_xxxx"]
+        S3["sweep.run_sweep<br/>并发运行 ./Allrun<br/>blockMesh → checkMesh → simpleFoam → writeCellVolumes"]
+        S4["collect_snapshots<br/>检查收敛与拓扑一致，只保留收敛样本"]
+        S1 --> S2 --> S3 --> S4
+    end
+
+    SNAP[("data/problem/study/<br/>snapshots.npz + samples.json")]
+
+    subgraph FIT["scripts/fit_and_eval.py：拟合与评估"]
+        direction TB
+        F1["SteadyROM.fit<br/>U、p、phi 分场 WeightedPOD<br/>回归器：RBF / GPR / MLP"]
+        F2["evaluate<br/>测试集误差 · 投影下界 · LOO-CV<br/>学习曲线 · phi 散度 · GPR 不确定度"]
+        F1 --> F2
+    end
+
+    OUT[("data/problem/study/<br/>report.json + models/*.pkl")]
+    ROMCASE[("cases/problem_study_rom_regressor/run_xxxx/<br/>时间目录 1/：U p phi U_fom p_fom U_err p_err")]
+
+    S4 --> SNAP --> F1
+    F2 --> OUT
+    F2 -. "--write-fields N" .-> ROMCASE
 ```
 
 `--write-fields` 把 ROM 预测写成 `cases/<problem>_<study>_rom_<regressor>/run_xxxx/`（时间目录 `1/` 含

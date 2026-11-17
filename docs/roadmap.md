@@ -26,20 +26,21 @@
 ### 阶段 1：稳态参数化场重建（已完成，M1–M6）
 - 网格固定，在物理参数空间采样（Sobol / LHS），用 OpenFOAM 生成稳态快照，对任意参数预测全场。
 - 算例：顶盖驱动方腔（cavity）和圆柱绕流（cylinder），层流，**只用 Re 一个参数**。
-  圆柱稳态只在 Re≲47 成立，参数范围取 10–40。
-- 方法：体积加权 POD（分场）+ 回归（RBF、GPR；MLP 作对比项）。
+  圆柱稳态只在 $\mathrm{Re} \lesssim 47$ 成立，参数范围取 10–40。
+- 方法：体积加权 POD（分场）+ 回归（RBF、GPR；MLP 作对比项），算法见 `docs/pod.md` 与
+  `docs/regressors.md`。
 - 评估：测试集误差、POD 投影误差、留一交叉验证、`phi` 散度残差。
 - 已验证结论：
   - 测试集 `U` 平均相对 L2 误差：cavity RBF 1.2e-3 / GPR 4.7e-5 / MLP 1.4e-3；cylinder RBF 2.2e-4 /
     GPR 2.3e-5 / MLP 9.2e-5。
   - 重建 `phi` 的最大单元散度约 1e-11，与 FOM 同量级（离散连续性得以保持）。
-  - 30 样本下 MLP 比 GPR 差约 4–29 倍；学习曲线显示 n≤8 时 MLP/RBF 优于 GPR，n≥12 后 GPR 领先。
+  - 30 样本下 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP/RBF 优于 GPR，$n \ge 12$ 后 GPR 领先。
 - 之后扩展：边界条件参数化、多参数（留待后续）。
 - 计划：`.opencode/plans/20261116-stage1-steady-rom.md`
 
 ### 阶段 2：瞬态时间外推
 - 网格固定，前若干步用 OpenFOAM 生成快照，预测之后的场。
-- 可行性取决于流态：衰减到稳态、周期流（如 Re≈100 的圆柱涡脱落）可行；训练窗口没覆盖目标动力学时
+- 可行性取决于流态：衰减到稳态、周期流（如 $\mathrm{Re} \approx 100$ 的圆柱涡脱落）可行；训练窗口没覆盖目标动力学时
   原理上无法外推；混沌/湍流只能短期预测。训练窗口应越过初始瞬态，覆盖至少 2–3 个周期。
 - 方法：POD + Operator Inference（二次形式，契合不可压 NS）为主，DMD 系列（optimized DMD、BOP-DMD、
   HODMD）为基线；LSTM / 神经 ODE 作为后备。
@@ -63,6 +64,10 @@
 - 阶段 3：几何参数化的具体方式；3D 汽车外流场是否纳入。
 - 侵入式 ROM 何时引入，以及采用什么形式（超降阶、稳定化、supremizer 等）。
 - 自适应采样（贪心加点，基于 GPR 方差）是否纳入阶段 1 之后的迭代。
+- ROM 专用 MCP 工具：阶段 1 不做（脚本 `generate_snapshots.py`、`fit_and_eval.py` 已覆盖流程，采样是长任务不适合工具调用，
+  且接口在阶段 2、3 会变）。阶段 2/3 视使用情况再评估；若要做，建议另起独立的 MCP 服务（例如 `fvmrom-rom-mcp`，
+  避免拖慢 `openfoam` 服务和加重 `fvmrom-mcp.exe` 被占用导致 `uv run` sync 失败的问题），只做薄封装，
+  第一批工具可以是 `list_studies`、`study_report`、`rom_predict`；采样仍走脚本和后台作业。
 
 ## 阶段 2 的前置事项
 - 补充评估 `U`–`phi` 的通量一致性指标（阶段 2 用 `phi` 推进对流项时需要）。
