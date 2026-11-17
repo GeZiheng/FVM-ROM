@@ -1,7 +1,7 @@
 ---
 description: 负责更新和维护项目文档（README.md、AGENTS.md、docs/）。代码、配置或流程变更后，用它让文档与实现保持同步；只改文档，不改代码。
 mode: subagent
-model: opencode/deepseek-v4.1-flash-free
+model: deepseek/deepseek-flash
 steps: 30
 permissions:
   - action: "*"

@@ -14,6 +14,10 @@ from .commands import build_run_script
 from .logs import tail
 from .wsl import Wsl, win_to_wsl
 
+ACTIVE_STATES = ("running", "starting")
+PID_WAIT_S = 20.0
+STOP_POLL_S = 0.5
+
 
 class Jobs:
     def __init__(self, settings: Settings | None = None):
@@ -100,6 +104,65 @@ class Jobs:
             raise RuntimeError(f"Bad pid file for job {job_id}")
         self.wsl.run(f"kill -TERM -- -{pid} 2>/dev/null || kill -TERM {pid}", 15, with_env=False)
         return {"job_id": job_id, "signal": "TERM", "pid": int(pid)}
+
+    def wait_pid(self, job_id: str, timeout: float = PID_WAIT_S) -> str:
+        """Block until the wrapper script has written its pid (required before ``stop``)."""
+        pid_file = self._jdir(job_id) / "pid"
+        deadline = time.time() + timeout
+        while not pid_file.is_file():
+            if time.time() >= deadline:
+                raise RuntimeError(f"Job {job_id} wrote no pid file within {timeout:.0f} s")
+            time.sleep(STOP_POLL_S)
+        pid = pid_file.read_text().strip()
+        if not pid.isdigit():
+            raise RuntimeError(f"Bad pid file for job {job_id}")
+        return pid
+
+    def stop_case(self, case: str, timeout: float = 30.0) -> list[str]:
+        """Stop every job of ``case`` that is still running and wait until it is gone."""
+        targets = [
+            job_id
+            for job_id in self._case_job_ids(case)
+            if self.status(job_id, tail_lines=0)["state"] in ACTIVE_STATES
+        ]
+        if not targets:
+            return []
+        for job_id in targets:
+            try:
+                self.stop(job_id)
+            except RuntimeError:
+                self.wait_pid(job_id)  # still starting: its pid file is not written yet
+                self.stop(job_id)
+        deadline = time.time() + timeout
+        while True:
+            alive = [
+                job_id
+                for job_id in targets
+                if self.status(job_id, tail_lines=0)["state"] in ACTIVE_STATES
+            ]
+            if not alive:
+                return targets
+            if time.time() >= deadline:
+                raise RuntimeError(
+                    f"jobs of {case} still running after {timeout:.0f} s: {', '.join(alive)}"
+                )
+            time.sleep(STOP_POLL_S)
+
+    def _case_job_ids(self, case: str) -> list[str]:
+        if not self.dir.is_dir():
+            return []
+        out = []
+        for d in sorted(self.dir.iterdir()):
+            meta_file = d / "meta.json"
+            if not d.is_dir() or not meta_file.is_file():
+                continue
+            try:
+                meta = json.loads(meta_file.read_text())
+            except (OSError, ValueError):
+                continue
+            if meta.get("case") == case:
+                out.append(d.name)
+        return out
 
     def list(self, limit: int = 20) -> list[dict]:
         if not self.dir.is_dir():

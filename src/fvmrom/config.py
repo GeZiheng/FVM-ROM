@@ -23,6 +23,10 @@ class Settings:
     cases_dir: Path = field(
         default_factory=lambda: Path(os.environ.get("FVMROM_CASES_DIR", PROJECT_ROOT / "cases"))
     )
+    #: Directory (Windows path) for snapshots, models and reports.
+    data_dir: Path = field(
+        default_factory=lambda: Path(os.environ.get("FVMROM_DATA_DIR", PROJECT_ROOT / "data"))
+    )
     #: Directory (Windows path) for MCP runtime state (jobs, generated scripts).
     state_dir: Path = field(
         default_factory=lambda: Path(os.environ.get("FVMROM_STATE_DIR", PROJECT_ROOT / ".fvmrom"))

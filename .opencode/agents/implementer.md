@@ -1,7 +1,7 @@
 ---
 description: 按 .opencode/plans 中已确认的计划实现代码（含测试）。只实现计划内的内容；计划不清晰或不合理时停止并反馈，不自行改计划。不改文档。
 mode: subagent
-model: opencode/deepseek-v4.1-flash-free
+model: deepseek/deepseek-flash
 steps: 80
 permissions:
   - action: "*"

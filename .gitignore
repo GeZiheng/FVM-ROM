@@ -3,8 +3,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .idea/
-# .opencode/agents 和 .opencode/plans 需要纳入版本控制
+
+# .opencode local data
 .opencode/node_modules/
+.opencode/plans/
 
 # runtime state of the MCP server (jobs, temp scripts)
 .fvmrom/
@@ -12,15 +14,6 @@ __pycache__/
 # OpenFOAM case data: keep case definitions, drop results
 cases/*
 !cases/.gitkeep
-!cases/*/
-cases/*/log.*
-cases/*/processor*/
-cases/*/postProcessing/
-cases/*/constant/polyMesh/
-cases/*/VTK/
-cases/*/[1-9]*/
-cases/*/0.[0-9]*/
-cases/*/*.foam
 
 # ROM data (snapshots, bases, models)
 data/*

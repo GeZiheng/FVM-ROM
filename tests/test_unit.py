@@ -2,11 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from fvmrom.config import Settings
+from fvmrom.config import PROJECT_ROOT, Settings
 from fvmrom.foam.case import Cases, safe_join
 from fvmrom.foam.commands import build_run_script, validate_app
 from fvmrom.foam.logs import parse_log
 from fvmrom.foam.wsl import win_to_wsl, wsl_to_win
+
+
+def test_settings_data_dir(monkeypatch, tmp_path):
+    assert Settings().data_dir == PROJECT_ROOT / "data"
+    monkeypatch.setenv("FVMROM_DATA_DIR", str(tmp_path / "rom-data"))
+    assert Settings().data_dir == tmp_path / "rom-data"
 
 
 def test_path_mapping():
@@ -93,3 +99,14 @@ def test_parse_log(tmp_path):
     assert r["last_time"] == "2" and r["n_time_steps"] == 2
     assert r["fields"]["Ux"]["last_initial"] == 0.5
     assert r["finished"] and not r["fatal_error"]
+    assert not r["floating_point_exception"]
+
+
+def test_parse_log_fpe(tmp_path):
+    log = tmp_path / "log.simpleFoam"
+    log.write_text(
+        "trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).\n"
+        "Time = 3\n"
+        "Floating point exception (core dumped)\n"
+    )
+    assert parse_log(log)["floating_point_exception"]

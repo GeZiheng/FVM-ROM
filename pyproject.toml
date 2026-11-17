@@ -6,12 +6,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.2,<2",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 rom = [
-    "numpy>=1.26",
     "scipy>=1.11",
+    "scikit-learn>=1.4",
+]
+nn = [
+    "torch>=2.2",
 ]
 
 [project.scripts]

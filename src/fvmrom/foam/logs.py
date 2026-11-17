@@ -11,6 +11,9 @@ _SOLVE_RE = re.compile(
 )
 _TIME_RE = re.compile(r"^Time = (\S+)", re.M)
 _CONVERGED_RE = re.compile(r"solution converged in (\S+) iterations", re.I)
+# The run banner says "trapFpe: Floating point exception trapping enabled"; only a message
+# at the start of a line (printed by bash when the solver is killed) is a real FPE.
+_FPE_RE = re.compile(r"^Floating point exception", re.M)
 
 
 def tail(path: Path, n: int = 40, max_bytes: int = 64_000) -> str:
@@ -50,5 +53,5 @@ def parse_log(path: Path) -> dict:
         "converged": conv.group(0) if conv else None,
         "finished": bool(re.search(r"^End\s*$", text, re.M)),
         "fatal_error": "FOAM FATAL" in text,
-        "floating_point_exception": "floating point exception" in text.lower(),
+        "floating_point_exception": bool(_FPE_RE.search(text)),
     }

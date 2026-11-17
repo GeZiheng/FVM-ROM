@@ -1,7 +1,7 @@
 ---
 description: 只读审查：评审 .opencode/plans 中的计划是否合理，以及 implementer 的实现是否符合计划、是否正确安全。只汇报发现，不改任何文件。
 mode: subagent
-model: opencode/glm-5.3-flash-free
+model: opencode/claude-haiku-5-5
 steps: 50
 permissions:
   - action: "*"
@@ -27,6 +27,9 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run pytest*"
+    effect: allow
+  - action: shell
+    resource: "uv run --no-sync pytest*"
     effect: allow
 ---
 
