@@ -280,17 +280,17 @@ def test_transient_case_files(cases):
         assert _entry(control, "writePrecision") == "10"
         assert _entry(control, "adjustTimeStep") == "no"
         assert _entry(control, "writeControl") == "timeStep"
+        assert _entry(control, "startFrom") == "latestTime"
         assert float(_entry(control, "deltaT")) == pytest.approx(0.005)
-        assert _entry(control, "purgeWrite") == "0"
         assert "type            forceCoeffs;" in control
         assert "writeInterval   1;" in control  # every step for the force coefficients
         assert "writeControl    timeStep;" in control
-    assert _entry(spin, "startFrom") == "startTime"
     assert float(_entry(spin, "endTime")) == 2.0
     assert int(spin.split("writeInterval")[1].split(";")[0]) == 400
-    assert _entry(prod, "startFrom") == "latestTime"
+    assert _entry(spin, "purgeWrite") == "3"  # keep the last three checkpoints
     assert float(_entry(prod, "endTime")) == 4.0
     assert int(prod.split("writeInterval")[1].split(";")[0]) == 40
+    assert _entry(prod, "purgeWrite") == "0"
     assert (root / "system/controlDict").read_text() == spin
 
     schemes = (root / "system/fvSchemes").read_text()
@@ -311,43 +311,74 @@ def test_transient_case_files(cases):
 
     allrun = (root / "Allrun").read_text()
     assert allrun.startswith("#!/bin/bash") and "set -e" in allrun
-    assert "blockMesh > log.blockMesh" in allrun
-    assert "checkMesh > log.checkMesh" in allrun
+    assert "if [ ! -d constant/polyMesh ]; then" in allrun
+    assert "    blockMesh > log.blockMesh" in allrun
+    assert "    checkMesh > log.checkMesh" in allrun
     assert 'grep -q "Failed" log.checkMesh' in allrun
-    assert "setFields > log.setFields" in allrun
-    assert "postProcess -func writeCellVolumes -time 0" in allrun
+    assert "    setFields > log.setFields" in allrun
+    assert "    postProcess -func writeCellVolumes -time 0" in allrun
     assert "cp system/controlDict.spin system/controlDict" in allrun
     assert "cp system/controlDict.prod system/controlDict" in allrun
-    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 2
-    assert "pimpleFoam >> log.pimpleFoam" in allrun
+    assert allrun.count("pimpleFoam >> log.pimpleFoam") == 2
+    assert "pimpleFoam > log.pimpleFoam" not in allrun
+    assert allrun.count("foamListTimes -latestTime") == 2
+    assert 'end="2"' in allrun and 'end="4"' in allrun
 
 
 def test_transient_phases_degenerated(cases):
     # t_spin == 0: one production run from time 0
     config = TransientConfig(snapshot_dt=0.2, t_spin=0.0, t_end=1.0)
     assert config.phases == ("production",)
+    assert config.checkpoint_steps == 0
     root, _ = _transient_case(cases, config, "cyl_prod/run_0000")
     assert not (root / "system/controlDict.spin").exists()
     prod = (root / "system/controlDict.prod").read_text()
-    assert _entry(prod, "startFrom") == "startTime"
+    assert _entry(prod, "startFrom") == "latestTime"
     assert int(prod.split("writeInterval")[1].split(";")[0]) == 40
     assert (root / "system/controlDict").read_text() == prod
     allrun = (root / "Allrun").read_text()
-    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 1
+    assert allrun.count("pimpleFoam >> log.pimpleFoam") == 1
     assert "controlDict.spin" not in allrun
 
-    # t_spin == t_end: pilot, only the spin-up phase writes its final time
+    # t_spin == t_end: pilot, only the spin-up phase with its checkpoints
     config = TransientConfig(snapshot_dt=0.2, t_spin=1.0, t_end=1.0)
     assert config.phases == ("spin",)
     root, _ = _transient_case(cases, config, "cyl_pilot/run_0000")
     assert not (root / "system/controlDict.prod").exists()
     spin = (root / "system/controlDict.spin").read_text()
-    assert _entry(spin, "startFrom") == "startTime"
+    assert _entry(spin, "startFrom") == "latestTime"
     assert int(spin.split("writeInterval")[1].split(";")[0]) == 200
+    assert _entry(spin, "purgeWrite") == "3"
     allrun = (root / "Allrun").read_text()
-    assert sum(line.startswith("pimpleFoam") for line in allrun.splitlines()) == 1
+    assert allrun.count("pimpleFoam >> log.pimpleFoam") == 1
     assert "controlDict.prod" not in allrun
-    assert "pimpleFoam > log.pimpleFoam" in allrun
+
+
+def test_transient_checkpoint_interval():
+    # t_spin / snapshot_dt = 10, divisors 1, 2, 5, 10 (snapshot_steps = 40)
+    def steps(checkpoint_dt: float, **kw) -> int:
+        return TransientConfig(
+            snapshot_dt=0.2, checkpoint_dt=checkpoint_dt, t_spin=2.0, t_end=4.0, **kw
+        ).checkpoint_steps
+
+    assert steps(10.0) == 400  # the whole spin-up: one write at t_spin
+    assert steps(100.0) == 400  # a huge checkpoint interval does not add writes
+    assert steps(1.0) == 200  # 5 snapshots = 1.0
+    assert steps(0.4) == 80  # 2 snapshots = 0.4
+    assert steps(0.3) == 40  # no divisor of 10 between 1 and 1.5 snapshots
+    assert steps(0.05) == 40  # below snapshot_dt: every snapshot
+    for checkpoint_dt in (0.05, 0.3, 0.4, 1.0, 10.0):
+        assert 400 % steps(checkpoint_dt) == 0  # t_spin always lands on a write
+
+    # t_spin / snapshot_dt = 5 is prime: no intermediate checkpoint unless the limit allows 5
+    prime = TransientConfig(snapshot_dt=0.4, checkpoint_dt=1.0, t_spin=2.0, t_end=2.0)
+    assert prime.checkpoint_steps == 80  # 1 snapshot = 0.4, the only divisor below 1.0
+    assert TransientConfig(
+        snapshot_dt=0.4, checkpoint_dt=2.0, t_spin=2.0, t_end=2.0
+    ).checkpoint_steps == 400
+
+    with pytest.raises(ValueError, match="checkpoint_dt"):
+        TransientConfig(checkpoint_dt=0.0, t_end=1.0)
 
 
 def test_transient_timestep_rule():

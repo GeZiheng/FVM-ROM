@@ -117,8 +117,12 @@ def run_transient(
 
     if case_dir.is_dir():
         jobs.stop_case(case)
-        shutil.rmtree(case_dir)
-    problem.write_case(cases, case)
+        if resume:
+            _verify_case(cases, case, config)
+        else:
+            shutil.rmtree(case_dir)
+    if not case_dir.is_dir():
+        problem.write_case(cases, case)
 
     job = jobs.start(case, "./Allrun", [])
     state = "starting"
@@ -137,6 +141,29 @@ def run_transient(
         converged = False
         message = f"job {state}: {message}"
     return TransientRun(case, config, converged, message, courant)
+
+
+def _verify_case(cases: Cases, case: str, config: "TransientConfig") -> None:
+    """Refuse to resume a case whose dictionaries were written from another config."""
+    from ..case_templates.cylinder_transient import files  # local: avoids a circular import
+
+    # files that the run itself rewrites: setFields touches 0/U, Allrun copies the controlDicts
+    mutable = {"0/U", "system/controlDict"}
+    root = cases.path(case)
+    stale = []
+    for rel, text in files(config).items():
+        if rel in mutable:
+            continue
+        path = root / rel
+        if not path.is_file():
+            stale.append(f"{rel} (missing)")
+        elif path.read_text(encoding="utf-8", errors="replace") != text:
+            stale.append(rel)
+    if stale:
+        raise ValueError(
+            f"cannot resume {case}: it does not match the current config ({', '.join(stale)}); "
+            "rerun without --resume to rebuild the case, or check the config"
+        )
 
 
 def _check_log(cases: Cases, case: str, phases: int) -> tuple[bool, str, float | None]:

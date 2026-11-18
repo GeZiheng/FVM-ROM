@@ -1,5 +1,6 @@
 """Transient runs and force-coefficient reading, without OpenFOAM (fake jobs/cases)."""
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -22,11 +23,14 @@ End
 
 
 class FakeJobs:
-    def __init__(self, cases, log_text=None, states=("completed",), fail_status=False):
+    def __init__(
+        self, cases, log_text=None, states=("completed",), fail_status=False, append=False
+    ):
         self.cases = cases
         self.log_text = log_text
         self.states = list(states)
         self.fail_status = fail_status
+        self.append = append
         self.started: list[str] = []
         self.stopped: list[str] = []
         self.stopped_cases: list[str] = []
@@ -34,7 +38,9 @@ class FakeJobs:
     def start(self, case, app, args, np=1, log_name=None):
         self.started.append(case)
         if self.log_text is not None:
-            self.cases.write(case, "log.pimpleFoam", self.log_text)
+            path = self.cases.path(case) / "log.pimpleFoam"
+            with path.open("a" if self.append else "w", encoding="utf-8", newline="\n") as f:
+                f.write(self.log_text)
         return {"job_id": "job-1"}
 
     def status(self, job_id, tail_lines=0):
@@ -100,6 +106,27 @@ def test_read_forces_merges_restart_directories(tmp_path):
     # the same time in two directories: the later directory wins
     assert out["cd"] == pytest.approx([1.0, 1.0, 2.0, 2.0])
     assert out["cl"] == pytest.approx([0.1, 0.2, 9.0, 0.6])
+
+
+def test_read_forces_resume_history_is_continuous(tmp_path):
+    # one run killed and resumed twice: every restart repeats the start time
+    root = tmp_path / "case"
+    first = [(round(0.01 * k, 2), 1.0, 0.1 * k) for k in range(1, 101)]  # 0.01 .. 1.00
+    second = [(1.0, 9.0, 9.0)] + [
+        (round(1.0 + 0.01 * k, 2), 1.0, 0.5) for k in range(1, 101)
+    ]  # 1.00 .. 2.00
+    third = [(2.0, 8.0, 8.0)] + [(round(2.0 + 0.01 * k, 2), 1.0, 0.7) for k in range(1, 4)]
+    for name, rows in (("0", first), ("1", second), ("2", third)):
+        _coefficient(root / "postProcessing" / "forceCoeffs" / name / "coefficient.dat", rows)
+
+    out = read_forces(root)
+    assert out["time"].size == 203
+    assert np.all(np.diff(out["time"]) > 0.0)
+    assert out["time"][0] == pytest.approx(0.01)
+    assert out["time"][-1] == pytest.approx(2.03)
+    # the later restart directory wins at the seam
+    assert out["cd"][np.searchsorted(out["time"], 1.0)] == pytest.approx(9.0)
+    assert out["cl"][np.searchsorted(out["time"], 2.0)] == pytest.approx(8.0)
 
 
 def test_read_forces_skips_bad_rows(tmp_path):
@@ -199,6 +226,86 @@ def test_run_transient_resume_skips_finished_case(tmp_path):
     assert again.converged and again.message.startswith("skipped:")
     assert second.started == []
     assert second.stopped_cases == []
+
+
+def test_run_transient_resume_does_not_verify_a_finished_case(tmp_path):
+    # pilot_base-style case: finished with an older template, only the forces are still missing
+    settings = _settings(tmp_path)
+    cases = Cases(settings)
+    run = run_transient(_problem(), "keep", cases=cases, jobs=FakeJobs(cases, LOG_OK), poll_s=0.0)
+    (cases.path(run.case) / "4").mkdir()
+    cases.write(run.case, "system/controlDict.spin", "stale dictionary\n")
+
+    jobs = FakeJobs(cases, LOG_OK)
+    again = run_transient(_problem(), "keep", cases=cases, jobs=jobs, resume=True, poll_s=0.0)
+    assert again.converged and again.message.startswith("skipped:")
+    assert jobs.started == [] and jobs.stopped_cases == []
+
+
+def test_run_transient_resumes_an_unfinished_case(tmp_path):
+    settings = _settings(tmp_path)
+    cases = Cases(settings)
+    problem = _problem()
+    case = "cylinder_transient_restart/run_0000"
+    problem.write_case(cases, case)
+    root = cases.path(case)
+    (root / "1.0").mkdir()
+    (root / "1.0" / "keep.txt").write_text("checkpoint\n", encoding="utf-8")
+    partial = "Time = 0.5\nCourant Number mean: 0.01 max: 0.4\n"  # interrupted: no 'End'
+    (root / "log.pimpleFoam").write_text(partial, encoding="utf-8")
+
+    jobs = FakeJobs(cases, LOG_OK, append=True)
+    run = run_transient(problem, "restart", cases=cases, jobs=jobs, resume=True, poll_s=0.0)
+    assert jobs.stopped_cases == [case]  # leftover processes are stopped first
+    assert jobs.started == [case]
+    assert run.converged, run.message
+    assert run.max_courant == pytest.approx(0.4)  # the interrupted part counts too
+    assert (root / "1.0" / "keep.txt").is_file()  # the case was not rebuilt
+    log = (root / "log.pimpleFoam").read_text()
+    assert log.startswith(partial)  # the interrupted log is appended to, not replaced
+    assert len(re.findall(r"^End\s*$", log, re.M)) == 2
+
+
+def test_run_transient_resume_rejects_a_changed_config(tmp_path):
+    settings = _settings(tmp_path)
+    cases = Cases(settings)
+    problem = _problem()
+    case = "cylinder_transient_stale/run_0000"
+    problem.write_case(cases, case)
+    root = cases.path(case)
+    (root / "0" / "keep.txt").write_text("keep\n", encoding="utf-8")
+    (root / "log.pimpleFoam").write_text("Time = 0.5\n", encoding="utf-8")
+    (root / "system/controlDict.spin").write_text("stale dictionary\n", encoding="utf-8")
+    (root / "Allrun").unlink()
+
+    jobs = FakeJobs(cases, LOG_OK, append=True)
+    with pytest.raises(ValueError, match="cannot resume") as exc:
+        run_transient(problem, "stale", cases=cases, jobs=jobs, resume=True, poll_s=0.0)
+    assert "controlDict.spin" in str(exc.value) and "Allrun" in str(exc.value)
+    assert jobs.started == []
+    assert (root / "0" / "keep.txt").is_file()
+
+
+def test_run_transient_resume_reports_every_stale_file(tmp_path):
+    settings = _settings(tmp_path)
+    cases = Cases(settings)
+    problem = _problem()
+    case = "cylinder_transient_stale2/run_0000"
+    problem.write_case(cases, case)
+    root = cases.path(case)
+    (root / "system/controlDict.spin").write_text("stale dictionary\n", encoding="utf-8")
+    (root / "Allrun").write_text("#!/bin/bash\necho old\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot resume .*Allrun.*controlDict.spin") as exc:
+        run_transient(
+            problem,
+            "stale2",
+            cases=cases,
+            jobs=FakeJobs(cases, LOG_OK, append=True),
+            resume=True,
+            poll_s=0.0,
+        )
+    assert "--resume" in str(exc.value)
 
 
 def test_run_transient_cleans_an_unfinished_case(tmp_path):

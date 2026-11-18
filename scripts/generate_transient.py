@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--re", type=float, default=100.0)
     parser.add_argument("--geometry", choices=sorted(GEOMETRIES), default="base")
     parser.add_argument("--snapshot-dt", type=float, default=0.2)
+    parser.add_argument("--checkpoint-dt", type=float, default=10.0)
     parser.add_argument("--t-spin", type=float, required=True)
     parser.add_argument("--t-end", type=float, default=None)
     parser.add_argument("--pilot", action="store_true", help="stop at t_spin (forces only)")
@@ -42,7 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--x-out", type=float, default=None)
     parser.add_argument("--y-far", type=float, default=None)
     parser.add_argument("--res", type=float, default=None)
-    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip a finished case; continue an unfinished one from its latest time",
+    )
     args = parser.parse_args()
     if args.pilot:
         if args.t_end is not None and args.t_end != args.t_spin:
@@ -70,6 +75,7 @@ def main() -> None:
         re=args.re,
         geometry=geometry_from_args(args),
         snapshot_dt=args.snapshot_dt,
+        checkpoint_dt=args.checkpoint_dt,
         t_spin=args.t_spin,
         t_end=args.t_end,
         perturb=args.perturb,

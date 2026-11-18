@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isqrt
 from pathlib import Path
 
 from ..foam import Cases
@@ -23,6 +23,8 @@ PERTURB_BOX = ((0.6, -0.5, -1.0), (4.0, 0.5, 1.0))
 
 #: phase name -> suffix of the written ``system/controlDict.<suffix>``
 _SUFFIX = {"spin": "spin", "production": "prod"}
+#: spin-up checkpoints kept on disk (written time directories, 0 is never purged)
+SPIN_PURGE_WRITE = 3
 
 _FV_SCHEMES = """
 ddtSchemes
@@ -92,6 +94,7 @@ class TransientConfig:
     re: float = 100.0
     geometry: CylinderGeometry = CylinderGeometry()
     snapshot_dt: float = 0.2
+    checkpoint_dt: float = 10.0
     t_spin: float = 0.0
     t_end: float = 0.0
     perturb: float = 0.1
@@ -102,6 +105,8 @@ class TransientConfig:
             raise ValueError(f"re must be positive, got {self.re}")
         if not self.snapshot_dt > 0.0:
             raise ValueError(f"snapshot_dt must be positive, got {self.snapshot_dt}")
+        if not self.checkpoint_dt > 0.0:
+            raise ValueError(f"checkpoint_dt must be positive, got {self.checkpoint_dt}")
         if not self.t_end > 0.0:
             raise ValueError(f"t_end must be positive, got {self.t_end}")
         if not 0.0 <= self.t_spin <= self.t_end:
@@ -131,13 +136,31 @@ class TransientConfig:
         return _steps(self.t_spin, self.timestep, "t_spin")
 
     @property
+    def checkpoint_steps(self) -> int:
+        """Spin-up ``writeInterval``: the coarsest divisor of the spin steps inside ``checkpoint_dt``."""
+        count = _steps(self.t_spin, self.snapshot_dt, "t_spin")
+        if count == 0:
+            return 0
+        limit = self.checkpoint_dt / self.snapshot_dt * (1.0 + 1e-9)
+        multiple = max((d for d in _divisors(count) if d <= limit), default=1)
+        return self.snapshot_steps * multiple
+
+    @property
     def phases(self) -> tuple[str, ...]:
-        """``spin`` keeps only the final time, ``production`` writes every snapshot."""
+        """``spin`` writes checkpoints, ``production`` writes every snapshot."""
         if self.t_spin == 0.0:
             return ("production",)
         if self.t_spin == self.t_end:
             return ("spin",)
         return ("spin", "production")
+
+
+def _divisors(n: int) -> list[int]:
+    out = []
+    for i in range(1, isqrt(n) + 1):
+        if n % i == 0:
+            out += [i] if i == n // i else [i, n // i]
+    return out
 
 
 def _steps(total: float, step: float, name: str) -> int:
@@ -182,17 +205,18 @@ def files(config: TransientConfig) -> dict[str, str]:
 
 def control_dict(config: TransientConfig, phase: str) -> str:
     if phase == "spin":
-        start_from, start_time = "startTime", 0.0
-        end_time, interval = config.t_spin, config.spin_steps
+        end_time, interval, purge = (
+            config.t_spin,
+            config.checkpoint_steps,
+            SPIN_PURGE_WRITE,
+        )
     else:
-        start_from = "latestTime" if config.t_spin > 0.0 else "startTime"
-        start_time = 0.0
-        end_time, interval = config.t_end, config.snapshot_steps
+        end_time, interval, purge = config.t_end, config.snapshot_steps, 0
     body = f"""
 application     pimpleFoam;
 
-startFrom       {start_from};
-startTime       {start_time:.12g};
+startFrom       latestTime;
+startTime       0;
 stopAt          endTime;
 endTime         {end_time:.12g};
 
@@ -201,7 +225,7 @@ adjustTimeStep  no;
 
 writeControl    timeStep;
 writeInterval   {interval};
-purgeWrite      0;
+purgeWrite      {purge};
 
 writeFormat     ascii;
 writePrecision  10;
@@ -244,19 +268,26 @@ def allrun(config: TransientConfig) -> str:
         "#!/bin/bash",
         "set -e",
         'cd "$(dirname "$0")"',
-        "blockMesh > log.blockMesh 2>&1",
-        "checkMesh > log.checkMesh 2>&1",
-        "if grep -q \"Failed\" log.checkMesh; then",
-        '    echo "checkMesh reported failures, see log.checkMesh" >&2',
-        "    exit 1",
-        "fi",
+        "if [ ! -d constant/polyMesh ]; then",
+        "    blockMesh > log.blockMesh 2>&1",
+        "    checkMesh > log.checkMesh 2>&1",
+        '    if grep -q "Failed" log.checkMesh; then',
+        '        echo "checkMesh reported failures, see log.checkMesh" >&2',
+        "        exit 1",
+        "    fi",
     ]
     if config.perturb > 0.0:
-        lines.append("setFields > log.setFields 2>&1")
-    lines.append("postProcess -func writeCellVolumes -time 0 > log.writeCellVolumes 2>&1")
+        lines.append("    setFields > log.setFields 2>&1")
+    lines.append("    postProcess -func writeCellVolumes -time 0 > log.writeCellVolumes 2>&1")
+    lines.append("fi")
     for phase in config.phases:
-        suffix = _SUFFIX[phase]
-        lines.append(f"cp system/controlDict.{suffix} system/controlDict")
-        redirect = ">>" if phase != config.phases[0] else ">"
-        lines.append(f"pimpleFoam {redirect} log.pimpleFoam 2>&1")
+        end = config.t_spin if phase == "spin" else config.t_end
+        # a phase whose end time was reached by an earlier run is skipped
+        lines.append('latest=$(foamListTimes -latestTime 2>/dev/null || echo 0)')
+        lines.append(
+            f'if awk -v t="$latest" -v end="{end:g}" \'BEGIN {{ exit !(t < end) }}\'; then'
+        )
+        lines.append(f"    cp system/controlDict.{_SUFFIX[phase]} system/controlDict")
+        lines.append("    pimpleFoam >> log.pimpleFoam 2>&1")
+        lines.append("fi")
     return "\n".join(lines) + "\n"
