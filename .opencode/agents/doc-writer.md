@@ -2,7 +2,7 @@
 description: 负责更新和维护项目文档（README.md、AGENTS.md、docs/）。代码、配置或流程变更后，用它让文档与实现保持同步；只改文档，不改代码。
 mode: subagent
 model: deepseek/deepseek-flash
-steps: 30
+steps: 60
 permissions:
   - action: "*"
     resource: "*"
@@ -62,6 +62,7 @@ permissions:
    - 新增约定或踩坑结论 → `AGENTS.md`
    - 完成或新增事项 → `docs/roadmap.md` 的勾选与待决问题
 5. ROM 技术路线尚未确定的部分，只记录已经与用户讨论并确定的结论；不要把猜测写成决策。
+6. **你有权读取隐藏目录和被 gitignore 的目录**，只是 `glob`、`grep` 默认不显示它们（隐藏目录要加 `hidden: true`，`grep`/`glob` 会遵守 `.gitignore`，所以搜不到 `data/`、`cases/`）。需要时直接用 `read` 读完整路径，例如计划文件 `.opencode/plans/<日期>-<名称>.md`、`data/cylinder_transient/<study>/report.json`、`data/cylinder_transient/<study>/meta.json`；不要因为 `glob` 没有结果就断定文件不存在或读不到。`report.json` 很大，用 `read` 的 `offset`/`limit` 分段读，或只读开头的摘要部分。
 
 ## 写作规范
 

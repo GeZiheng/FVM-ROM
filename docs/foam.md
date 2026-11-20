@@ -21,7 +21,7 @@
 | `fields.py` | ASCII 场读写、网格拓扑、`phi` 向量化与散度 | ROM |
 | `mesh.py` | 面 / 单元几何量、`linear` 插值权重、`phi` 权重 | ROM |
 | `sweep.py` | 阶段 1 的参数扫描与快照收集 | `scripts/generate_snapshots.py` |
-| `transient.py` | 阶段 2 的单轨迹瞬态运行与受力系数读取 | `scripts/generate_transient.py` |
+| `transient.py` | 阶段 2 的瞬态运行（两段式、续算）、受力系数与快照收集 | `scripts/generate_transient.py` |
 
 ## 与 WSL / OpenFOAM 通信
 
@@ -110,7 +110,8 @@
   目标是和 OpenFOAM 写出的 `V` 场在舍入误差内一致，避免几何量本身成为误差来源。
 - `phi_weights` 给出 `phi` 的近似单元体积 $L^2$ 范数权重：内部面取 $(V_P + V_N)/(2\|\mathbf{S}_f\|^2)$ ，patch 面取
   $V_P/\|\mathbf{S}_f\|^2$ （ $V_P$ 、 $V_N$ 是两侧单元体积， $\mathbf{S}_f$ 是面面积矢量）。用途两个：给 `phi` 的
-  POD 加权（`fit_and_eval.py --phi-weights area`），以及 U–phi 通量一致性评估的范数。
+  POD 加权（阶段 1 用 `fit_and_eval.py --phi-weights area` 可选，阶段 2 的瞬态 ROM 默认使用），以及
+  U–`phi` 通量一致性评估的范数。
 - 只读几何，**不画网格、不生成网格**；网格由 `case_templates/` 里的 `blockMeshDict` 模板生成。
 
 ## 批量与瞬态运行
@@ -132,15 +133,21 @@
 ### `transient.py`
 
 - 阶段 2 的单轨迹运行：一次只跑一个瞬态算例 `cases/cylinder_transient_<study>/run_0000`，与 `sweep` 共用
-  `Cases` / `Jobs` / `validate_study`。
-- 两段式：spin-up 段只保留最后一个时刻，生产段从 `latestTime` 继续并按 `snapshot_dt` 写快照；两段输出追加到
-  同一个 `log.pimpleFoam`，`run_transient` 以日志里 `End` 出现的次数等于阶段数判断完成。
-- 瞬态通常要重启，OpenFOAM 每次都会在 `postProcessing/forceCoeffs/` 下新建一个以起始时间命名的目录；所以
-  `read_forces` 把各目录的 `coefficient.dat` 合起来按时间排序，重复时间保留后一个目录的值，得到连续的
-  Cd / Cl 序列。
+  `Cases` / `Jobs` / `validate_study`；`inspect_run` 不运行、只检查已有算例的日志。
+- 两段式与续算：spin-up 段按 `checkpoint_dt` 写检查点（`purgeWrite 3` 只留最近三个），生产段从
+  `latestTime` 继续并按 `snapshot_dt` 写快照；两段输出追加到同一个 `log.pimpleFoam`，`run_transient` 以
+  日志里 `End` 的次数等于阶段数判断完成。`Allrun` 可重入（最新时间已到阶段终点就跳过）；
+  `run_transient(resume=True)` 从最新时间接着算，并在续算前逐文件比对算例字典与当前配置（`0/U` 与
+  `system/controlDict` 由运行过程改写，不参与比对）。
+- 受力系数：瞬态通常要重启，OpenFOAM 每次都会在 `postProcessing/forceCoeffs/` 下新建一个以起始时间命名的
+  目录；`read_forces` 把各目录的 `coefficient.dat` 合起来按时间排序，重复时间保留后一个目录的值。时间列
+  只有 6 位有效数字，传入 `dt` 时会吸附回 $k\,dt$ （容差 $0.1\,dt$ ）。
 - `courant_max` 取日志里 `Courant Number ... max:` 的最大值，给时间步长是否合理一个直接判据。
-- 字段快照的收集尚未实现：`generate_transient.py` 目前只写 `forces.npz` 与 `meta.json`，快照收集留待阶段 2
-  计划的 M1。
+- 快照收集：`select_snapshot_times` 取 `t >= t_spin`、间隔为 `snapshot_dt` 整数倍的时间目录，缺时间或
+  间隔不匀直接报错；`collect_transient` 用进程池并行读 `U/p/phi`，`volumes` 取自 `0/V`，`phi_weights`
+  取自网格几何，力系数按快照时刻对齐（优先复用已写出的 `forces.npz`），输出 `snapshots.npz`（`times`、
+  `U`、`p`、`phi`、`volumes`、`phi_weights`、`forces`、`re`）。`generate_transient.py` 另写 `forces.npz`
+  （全程每步）与 `meta.json`。
 
 ## 调用关系
 
@@ -182,6 +189,9 @@ flowchart TD
     TRANS --> CASES
     TRANS --> JOBS
     TRANS --> LOGS
+    TRANS --> SWEEP
+    TRANS --> FIELDS
+    TRANS --> MESH
 
     JOBS --> CASES
     JOBS --> CMD

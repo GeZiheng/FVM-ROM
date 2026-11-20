@@ -276,7 +276,7 @@ $\mathbf{W}^{(L+1)} \in \mathbb{R}^{r \times H}$ 。即每层 `Linear(width, hid
   `fvmrom.core.params` / `fvmrom.case_templates`，模块搬家（见 `docs/architecture.md`）前保存的 `.pkl`
   仍能加载。
 - `version` 不等于 `_FORMAT_VERSION` 时抛 `ValueError`（`unsupported ROM format ...`），不做兼容转换。
-- 比较 `versions` 与当前环境：`versions` 缺失或为空（M5 之前写的模型）时跳过；否则逐项比对，不一致时
+- 比较 `versions` 与当前环境：`versions` 缺失或为空（加入 `versions` 字段之前写的模型）时跳过；否则逐项比对，不一致时
   发 `RuntimeWarning`（形如 `numpy 1.26.4 -> 2.1.0`），但**仍然继续加载**。
 - 通过检查后按字典重建 `SteadyROM`，直接把 `pods`、`models`、`shapes` 赋回去。
 

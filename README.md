@@ -3,7 +3,7 @@
 基于 WSL2 Ubuntu 中预编译的 **OpenFOAM v2312（ESI 版）** 构建降阶模型（ROM）。ROM 技术路线定为三阶段：
 
 1. **阶段 1**：稳态参数化场重建（已实现，见下文）
-2. **阶段 2**：瞬态时间外推（未开始）
+2. **阶段 2**：瞬态时间外推（已实现，见下文；细节见 `docs/transient.md`）
 3. **阶段 3**：几何泛化（未开始）
 
 详见 `docs/roadmap.md`。此外本仓库提供一个 **OpenFOAM MCP 服务**，让智能体可以搭建、运行和检查算例。
@@ -22,15 +22,19 @@ src/fvmrom/
     jobs.py          后台任务（基于文件的状态）
     logs.py          求解器日志的尾部读取与残差解析
     tutorials.py     列出 / 复制 $FOAM_TUTORIALS 中的教程算例
-  case_templates/    算例模板：cavity、cylinder 的网格模板、边界条件与 Allrun
-  rom/               降阶模型：快照、POD 基、回归器（RBF / GPR / MLP）
+    fields.py        ASCII 场读写、网格拓扑、phi 散度
+    mesh.py          网格几何量与 phi 的面积权重
+    sweep.py         阶段 1 的参数扫描与快照收集
+    transient.py     阶段 2 的瞬态运行、续算与快照收集
+  case_templates/    算例模板：cavity、cylinder 与瞬态圆柱 cylinder_transient
+  rom/               降阶模型：加权 POD、回归器、稳态 / 瞬态 ROM 与潜空间动力学
 .opencode/
   mcps/openfoam/server.py  OpenFOAM MCP 服务脚本（stdio；harness 接入层，不属于 src/）
 cases/               OpenFOAM 算例（Windows 与 WSL 均可访问）
 data/                ROM 数据：快照、模型、报告（已被 git 忽略）
-docs/                架构、加权 POD、回归器与路线图
+docs/                架构、加权 POD、回归器、瞬态 ROM 与路线图
 tests/               测试
-scripts/             脚本：快照生成、拟合与评估、MCP 端到端冒烟测试
+scripts/             脚本：快照生成、拟合与评估、瞬态流程、MCP 端到端冒烟测试
 opencode.json        向 OpenCode 注册 MCP 服务（名称 openfoam）
 ```
 
@@ -43,7 +47,7 @@ opencode.json        向 OpenCode 注册 MCP 服务（名称 openfoam）
 uv sync                          # MCP 服务 + 开发工具（基础依赖含 numpy）
 uv sync --extra rom              # 额外安装 scipy、scikit-learn
 uv sync --extra rom --extra nn   # 再安装 torch，仅供 MLP 回归器使用
-uv run pytest                    # 共 220 个测试；-m "not wsl" 为 213，跳过真实 WSL 集成测试
+uv run pytest                    # 共 380 个测试；-m "not wsl" 为 370，跳过 10 个真实 WSL 集成测试
 ```
 
 此前 MCP 服务是 console script，占用 `.venv\Scripts\openfoam-mcp.exe` 会让 `uv run` 在 sync 阶段失败；
@@ -83,7 +87,8 @@ OpenCode 会通过 `opencode.json` 自动加载该服务（名称：`openfoam`�
 ## 阶段 1：稳态参数化场重建
 
 非侵入式降阶：先用 `simpleFoam` 生成稳态流场快照，再做 POD 基（U、p、phi 分场；U、p 体积加权，
-phi 单位权重），最后用 RBF / GPR / MLP 回归器由 Re 预测基系数并重建场。
+phi 默认单位权重，可用 `--phi-weights area` 改面积权重），最后用 RBF / GPR / MLP 回归器由 Re 预测基系数
+并重建场。
 
 - 算例：cavity（64×64， $\mathrm{Re} \in [100, 1000]$ 对数采样）、圆柱绕流（12 块 O 型网格、32768 单元，
   $\mathrm{Re} \in [10, 40]$ 线性采样）
@@ -110,7 +115,9 @@ uv run python scripts/fit_and_eval.py --problem cylinder --study re1d --regresso
 ```
 
 可选参数：`--energy-tol 1e-10`（POD 能量截断阈值）、`--n-modes U=10,p=10,phi=10`（各场模态数）、
+`--phi-weights {unit,area}`（`phi` 内积权重，默认 `unit`；`area` 用网格面积权重）、
 `--sizes 5,8,12,16,20,30`（学习曲线的样本数）、`--mlp-seeds 5`（MLP 多种子稳定性统计）。
+报告里额外给出 U–`phi` 一致性（`flux_consistency`：FOM 基线 / ROM / 比值）。
 
 ### 数据布局
 
@@ -148,16 +155,93 @@ ROM 算例的时间目录 `1/` 含 `U p phi U_fom p_fom U_err p_err`，误差为
 | cylinder | 2.2e-4 | 2.3e-5 | 9.2e-5 |
 
 - 重建 `phi` 的最大单元散度约 1e-11，与 FOM 同量级。
+- `phi` 面积权重（`--phi-weights area`）对 cavity 无影响（均匀网格）；cylinder 上 `phi` 误差降低约 3–4%。
+  FOM 自身的 U–`phi` 一致性基线：cavity 8.0e-3、cylinder 1.2e-4。
 - 30 样本时 MLP 比 GPR 差约 4–29 倍；学习曲线显示 $n \le 8$ 时 MLP / RBF 反而优于 GPR， $n \ge 12$ 后 GPR 领先。
 - 圆柱的 Cd 随 Re 单调下降（Re=10.1 时 3.02，Re=39.4 时 1.63）。
 
 ### 已知限制
 
-- 质量守恒指标只保证 `phi` 的离散无散度，不保证与重建 U 的通量一致（阶段 2 再评估）。
-- `phi` 的内积用单位权重，仅适用于均匀网格（阶段 3 需要改）。
-- 圆柱域 $x \in [-10, 25]$ 、 $y \in [-10, 10]$ （阻塞比约 5%），未做域 / 网格无关性验证。
+- 质量守恒指标只保证 `phi` 的离散无散度，不保证与重建 U 的通量一致；`flux_consistency` 目前只报告、不设阈值。
+- `phi` 的内积默认仍用单位权重（只适用于均匀网格）；`--phi-weights area` 改用面积权重，默认行为不变。
+  阶段 2 的瞬态 ROM 默认用面积权重（见 `docs/transient.md`）。
+- 圆柱域 $x \in [-10, 25]$ 、 $y \in [-10, 10]$ （阻塞比约 5%）；阶段 1 的稳态算例未做域 / 网格无关性验证
+  （阶段 2 在 Re=100 瞬态上做了 pilot，见 `docs/transient.md`）。
 - Cd 仅作合理性记录；MLP 报告为单种子（种子 0），多种子仅用于均值与标准差的稳定性统计。
 - GPR 拟合时 sklearn 的 `ConvergenceWarning` 属正常现象。
 
-`uv run pytest` 运行全部 220 个测试（`-m "not wsl"` 为 213）；`uv run python scripts/smoke_mcp.py`
-对 MCP 服务做端到端检查（cavity 算例）。
+## 阶段 2：瞬态时间外推
+
+非侵入式时间外推：网格和 Re 固定，用前 3 个周期（90 个快照）训练，之后不再调用 OpenFOAM。ROM 只在 `U`
+的潜空间（默认 8 个模态）上做动力学——标准 DMD、Optimized DMD、BOP-DMD 作基线，Operator Inference
+（二次形式）为主方法；`p`、`phi` 与 Cd/Cl 由潜变量经多项式读出映射预测，`phi` 用面积权重并保持离散质量
+守恒。算法、指标与完整结果见 `docs/transient.md`。
+
+- 算例：二维圆柱绕流，Re=100，层流 `pimpleFoam`，base 网格 32768 单元
+- 运行：两段式（spin-up 到 t=60 后每 0.2 个时间单位写快照），生产段 t=60–160，共 501 个快照（约 17 个周期）
+
+### 生成 FOM 与快照
+
+```powershell
+uv run python scripts/generate_transient.py --study re100 --t-spin 60 --t-end 160
+# 收集完成后再清理中间场；清理后不能再 --collect-only
+uv run python scripts/generate_transient.py --study re100 --t-spin 60 --t-end 160 --collect-only --purge-fields
+```
+
+可选参数：`--pilot`（只跑到 `t_spin`，只看力系数）、`--resume`（续算未完成的算例）、`--collect-only`、
+`--purge-fields`、`--checkpoint-dt`（spin-up 检查点间隔）、`--workers`（快照读取进程数）、
+`--geometry {base,wide,fine}`。续算前会校验算例字典与当前配置一致。
+
+### 训练与评估
+
+```powershell
+uv run python scripts/fit_and_eval_transient.py --study re100 `
+    --methods dmd,optdmd,bopdmd,opinf,opinf_norecheck --train-periods 3
+```
+
+可选参数：`--n-modes U=8,p=8,phi=8`（`auto` 交给 `--energy-tol`）、`--sweep-modes 4,6,8,10,12`、
+`--sweep-train-periods 2,3,4,5`（只报告、不设阈值）、`--write-fields N`、`--long-periods 20`（超出数据的
+潜空间稳定性检查）、`--no-diagnostics`（跳过标量读出阶 1 诊断）。`scripts/shedding_report.py --studies
+pilot_base,pilot_wide,pilot_fine` 输出 pilot 对比表；`scripts/opinf_lambda_scan.py --study re100` 是 OpInf 的
+λ 敏感性只读诊断。
+
+### 数据布局
+
+```text
+cases/cylinder_transient_<study>/run_0000/                FOM 算例（re100 约 2.2 GB）
+cases/cylinder_transient_<study>_rom_<method>/run_0000/   ROM 算例（--write-fields 生成）
+data/cylinder_transient/<study>/snapshots.npz             快照（re100 约 639 MB）
+data/cylinder_transient/<study>/forces.npz                全程 Cd/Cl（每步一行）
+data/cylinder_transient/<study>/meta.json                 配置、网格、Courant、脱落统计、数据质量
+data/cylinder_transient/<study>/report.json               各方法误差、验收与扫描
+data/cylinder_transient/<study>/opinf_lambda_scan.json    λ 敏感性诊断
+data/cylinder_transient/<study>/models/<method>.pkl       模型
+```
+
+pilot study（`pilot_base`、`pilot_wide`、`pilot_fine`）只有 `forces.npz` 与 `meta.json`。
+
+### 已验证结果（`re100`，训练 3 个周期）
+
+| 方法 | U τ≤5 最大误差 | Cl 幅值误差 | verdict |
+| --- | --- | --- | --- |
+| POD 投影下界 | 1.96e-3 | — | — |
+| `dmd` | 2.53e-3 | 6.45% | FAIL（仅 Cl 幅值） |
+| `optdmd` | 2.37e-3 | 0.41% | PASS |
+| `bopdmd` | 2.36e-3 | 0.16% | PASS |
+| `opinf` | 1.44e-2 | 0.27% | FAIL（仅 U 误差；不发散） |
+| `opinf_norecheck` | NaN | NaN | FAIL（τ≈4.3 发散） |
+
+后续验证算例按 M6（圆柱 Re=150–180，下一步，另开计划）→ M7（方腔非定常启动）→ M8（后向台阶，视 M6、M7
+结果再定）的顺序推进，已写入计划，待确认后各自细化；M5（latent 神经 ODE）是有条件的备选，排在 M6 结果之后
+再决定是否做。
+
+### 已知限制
+
+- 验收结论只适用于默认配置（U=8、3 个训练周期）；U=10、12 时 OptDMD/BOP 的 Cl 幅值误差约 9–19%；
+  训练 4 个周期时为 1.97%–1.99%，贴着 2% 的限值。
+- OpInf 的 U 误差未达标，对模态数与训练窗口敏感；λ 的留出段只有约 0.7 个周期。
+- 标准 DMD 的 Cl 幅值 FAIL 主要来自二次读出放大潜空间误差，不是动力学本身。
+- FOM 的 Cl 幅值有约 5% 的网格敏感性；能量与相位指标的口径细节见 `docs/transient.md`。
+
+`uv run pytest` 运行全部 380 个测试（`-m "not wsl"` 为 370，跳过 10 个 WSL 集成测试）；
+`uv run python scripts/smoke_mcp.py` 对 MCP 服务做端到端检查（cavity 算例）。

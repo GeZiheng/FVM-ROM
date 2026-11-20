@@ -14,7 +14,13 @@ from .fields import (
 from .jobs import Jobs
 from .mesh import MeshGeometry, phi_weights, read_geometry
 from .sweep import RunResult, collect_snapshots, run_sweep, validate_study
-from .transient import TransientRun, read_forces, run_transient
+from .transient import (
+    TransientRun,
+    collect_transient,
+    inspect_run,
+    read_forces,
+    run_transient,
+)
 from .wsl import Wsl, win_to_wsl, wsl_to_win
 
 __all__ = [
@@ -27,6 +33,8 @@ __all__ = [
     "TransientRun",
     "Wsl",
     "collect_snapshots",
+    "collect_transient",
+    "inspect_run",
     "latest_time",
     "phi_divergence",
     "phi_vector",

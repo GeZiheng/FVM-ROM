@@ -1,11 +1,13 @@
 # 加权 POD
 
-`fvmrom.rom.pod.WeightedPOD` 负责稳态 ROM 的基提取：把快照矩阵 `X`（每行一个快照，形状 `(n, m)`）
-降到少数几个模态上。加权内积让"物理上的场能量"（例如单元体积）而不是网格点数决定模态的重要性。
+`fvmrom.rom.pod.WeightedPOD` 负责 ROM 的基提取：把快照矩阵 `X`（每行一个快照，形状 `(n, m)`）
+降到少数几个模态上（阶段 1 稳态与阶段 2 瞬态共用）。加权内积让"物理上的场能量"（例如单元体积）而不是
+网格点数决定模态的重要性。
 
 - 代码：`src/fvmrom/rom/pod.py`
 - 按场选择权重的规则：`src/fvmrom/rom/steady.py` 的 `_weights_for`
-- 在 ROM 中的位置见 `docs/architecture.md`；系数到场的回归见 `docs/regressors.md`
+- 在 ROM 中的位置见 `docs/architecture.md`；系数到场的回归见 `docs/regressors.md`；瞬态侧如何使用 POD 见
+  [docs/transient.md](transient.md)
 
 ## 加权内积
 
@@ -25,8 +27,28 @@ $a_i$, $b_i$ 是展平后场向量的第 $i$ 个分量, $w_i$ 是对应的权重
   - `p` 的展平长度等于 `n_cells`，权重直接用 `volumes`；
   - `U` 以 `(n_cells, 3)` 存储，展平后长度为 $3 \times$ `n_cells`，权重按 `np.repeat(volumes, 3)` 逐分量重复；
   - 其它长度组合直接抛 `ValueError`。
-- 面通量 `phi` 用单位权重：目前只适用于均匀网格，阶段 3 需要改为面积权重。
+- 面通量 `phi` 默认用单位权重；传入 `phi_weights` 时改用面积权重，见下。
 - 不在 `VOLUME_WEIGHTED` 中的场一律用单位权重。
+
+### `phi` 的面积权重
+
+把面通量 $\phi_f = \mathbf{u}_f \cdot \mathbf{S}_f$ 看作面法向速度，用近似体积加权的 $L^2$ 范数：
+
+$$
+w_f = \begin{cases}
+\dfrac{V_P + V_N}{2 \lVert \mathbf{S}_f \rVert^2}, & \text{内部面} \\
+\dfrac{V_P}{\lVert \mathbf{S}_f \rVert^2}, & \text{边界面（非 empty）}
+\end{cases}
+$$
+
+其中 $V_P$ 、 $V_N$ 是 owner / neighbour 单元的体积， $\mathbf{S}_f$ 是面面积矢量；
+`fvmrom.foam.mesh.phi_weights` 按 `phi_vector` 的布局给出这些权重。均匀网格上所有 $w_f$ 相同，等价于
+单位权重（差一个常数因子）；非均匀网格上不再让小面主导 POD。
+
+- 阶段 1 默认仍用单位权重；`scripts/fit_and_eval.py --phi-weights area` 可选用面积权重。
+- 阶段 2 的瞬态 ROM 默认使用面积权重（见 [docs/transient.md](transient.md)）。
+- 阶段 1 实测：cavity 为均匀网格，两种权重结果相同；cylinder 上面积权重使 `phi` 误差降低约 3–4%，
+  FOM 的 U–`phi` 一致性指标从 1.17e-4 变为 1.02e-4（指标值随权重变化，不是 FOM 变准）。
 
 ## 拟合
 
@@ -112,6 +134,25 @@ $$
 
 - `project` 要求 `X` 的列数等于 `mean_.size`；`reconstruct` 要求 `A` 的形状为 `(n, r)`。
 - 未拟合（`modes_ is None`）时调用 `project`/`reconstruct` 会抛 `RuntimeError`。
+
+## U–`phi` 通量一致性
+
+PISO / SIMPLE 算出的面通量 $\phi$ 不是单元速度的线性插值，ROM 重建的 `U` 与 `phi` 也不保证逐面一致。
+内部面上的相对 $L^2$ 残差给出两者的一致性（`fvmrom.rom.evaluate.flux_consistency`）：
+
+$$
+\varepsilon_{\phi} =
+\frac{\lVert \phi - I(\mathbf{U}) \cdot \mathbf{S}_f \rVert_W}
+{\lVert I(\mathbf{U}) \cdot \mathbf{S}_f \rVert_W}
+$$
+
+$I(\mathbf{U})$ 是 OpenFOAM `linear` 插值（`mesh.py` 的 `lin_weights`），只比较内部面（边界面的 `U`
+patch 值不在快照里）， $W$ 用 `phi_weights`。它必须与 FOM 自身的基线对比才有意义：FOM 的 $\phi$ 与
+$I(\mathbf{U}) \cdot \mathbf{S}_f$ 本来就不严格相等。首轮不设阈值，只报告。
+
+- 阶段 1 的报告里给出 FOM 基线 / ROM / 比值（`fit_and_eval.py`，权重由 `--phi-weights` 决定）。
+- 实测 FOM 基线（单位权重）：cavity 8.0e-3、cylinder 1.2e-4；面积权重下 cylinder 为 1.02e-4。
+- 阶段 2 的瞬态评估同样报告该指标，见 [docs/transient.md](transient.md)。
 
 ## 属性与 pickle 兼容
 

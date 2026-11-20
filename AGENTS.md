@@ -1,8 +1,8 @@
 # FVM-ROM – 智能体须知
 
 目标：基于 OpenFOAM v2312（ESI 版，apt 安装，WSL2 Ubuntu）构建降阶模型（ROM）。ROM 技术路线已确定为
-三阶段（非侵入式稳态场重建 → 瞬态时间外推 → 几何泛化，详见 `docs/roadmap.md`），阶段 1 已实现。
-后续阶段的技术方案若有变化，仍需先与用户讨论再动手。
+三阶段（非侵入式稳态场重建 → 瞬态时间外推 → 几何泛化，详见 `docs/roadmap.md`）：阶段 1 与阶段 2 已实现，
+阶段 3（几何泛化）及后续验证算例 M6–M8 待讨论。后续阶段的技术方案若有变化，仍需先与用户讨论再动手。
 
 ## 环境事实
 - 宿主机：Windows；Python 由 `uv` 管理（`uv sync --extra rom`、`uv run ...`）。不要依赖 WSL 里的 Python
@@ -17,14 +17,22 @@
 - 通过 `openfoam` MCP 工具（或 `fvmrom.foam`）运行 OpenFOAM，不要临时拼 `wsl` 命令。
 - 求解器/程序的输出写入 `<case>/log.<app>`。
 - `np>1` 时算例必须已完成分解，且 `np` 必须等于 `numberOfSubdomains`。
-- ROM 数据（快照、基、模型）放在 `data/`，不要放进 `cases/`。布局：
+- ROM 数据（快照、基、模型）放在 `data/`，不要放进 `cases/`。阶段 1 布局：
   `data/<problem>/<study>/{snapshots.npz,samples.json,report.json,models/*.pkl}`；FOM 算例在
   `cases/<problem>_<study>/run_xxxx/`，ROM 算例在 `cases/<problem>_<study>_rom_<regressor>/run_xxxx/`。
-  `FVMROM_DATA_DIR` 可改数据根目录。
-- 两个脚本入口：`scripts/generate_snapshots.py`（采样 + 生成快照）、`scripts/fit_and_eval.py`（拟合与评估）。
+  阶段 2 布局：`data/cylinder_transient/<study>/` 下放 `snapshots.npz`、`forces.npz`、`meta.json`、
+  `report.json`、`opinf_lambda_scan.json` 与 `models/<method>.pkl`（pilot study 只有 `forces.npz` 与
+  `meta.json`）；FOM 算例在 `cases/cylinder_transient_<study>/run_0000/`，ROM 算例在
+  `cases/cylinder_transient_<study>_rom_<method>/run_0000/`。正式 study 为 `re100`，pilot 为 `pilot_base`、
+  `pilot_wide`、`pilot_fine`；`re100` 的快照约 639 MB、FOM 算例约 2.2 GB。`FVMROM_DATA_DIR` 可改数据根目录。
+- 脚本入口：阶段 1 的 `scripts/generate_snapshots.py`（采样 + 生成快照）与 `scripts/fit_and_eval.py`（拟合与
+  评估）；阶段 2 的 `scripts/generate_transient.py`（运行 FOM 并收集快照）、`scripts/shedding_report.py`
+  （pilot 对比表）、`scripts/fit_and_eval_transient.py`（训练与评估）、`scripts/opinf_lambda_scan.py`
+  （λ 敏感性只读诊断）。
 - `src/fvmrom/` 分层：`core/`（`config` 配置、`params` 参数采样；`core/__init__.py` 刻意留空、不重导出，
-  避免只装基础依赖的 `foam` 与 MCP 被迫导入 scipy）、`foam/`（OpenFOAM 访问层）、`case_templates/`
-  （算例模板：cavity、cylinder、cylinder_transient）、`rom/`。导入用完整路径（如
+  避免只装基础依赖的 `foam` 与 MCP 被迫导入 scipy）、`foam/`（OpenFOAM 访问层，含网格几何、阶段 1 扫描与
+  阶段 2 瞬态运行）、`case_templates/`（算例模板：cavity、cylinder、cylinder_transient）、`rom/`（加权 POD、
+  回归器、稳态 ROM；瞬态侧为潜空间动力学、读出映射与瞬态评估，见 `docs/transient.md`）。导入用完整路径（如
   `from fvmrom.core.config import ...`）；旧路径 `fvmrom.config` / `fvmrom.params` / `fvmrom.problems` 已不存在。
 - MCP 服务是 harness 接入层的独立脚本：`.opencode/mcps/<功能>/server.py`（当前 `openfoam`），由
   `opencode.json` 以 `uv run --project . python .opencode/mcps/<功能>/server.py` 启动。它用绝对导入
@@ -35,7 +43,12 @@
 - ESI v2312 的湍流字典是 `constant/turbulenceProperties`（不是 `momentumTransport`）；算例用 ASCII 格式
   （`fvmrom.foam.fields` 只读 ASCII）。`fvmrom.foam` 依赖 numpy。
 - `--study` 名需符合命名规则（见 README）。
-- `uv run pytest` 运行单元测试和真实 WSL 集成测试，当前共 220 个测试（`-m "not wsl"` 为 213，跳过 7 个 WSL 集成测试）。
+- 阶段 1 的默认行为不变：`phi` 内积默认仍用单位权重；`scripts/fit_and_eval.py --phi-weights area` 是可选开关，
+  报告里多一项 U–`phi` 一致性（`flux_consistency`）。阶段 2 的瞬态 ROM 默认用面积权重。
+- 阶段 2 的瞬态算例是两段式（spin-up 写检查点、生产段按 `snapshot_dt` 写快照）；`--purge-fields` 会删掉
+  spin-up 检查点与中间快照，清理后不能再 `--collect-only`，要重新跑生产段才能再收集。
+- `uv run pytest` 运行单元测试和真实 WSL 集成测试，当前共 380 个测试（`-m "not wsl"` 为 370，跳过 10 个
+  WSL 集成测试）。
 - `uv run python scripts/smoke_mcp.py` 对 MCP 服务做端到端测试（cavity 算例）。
 - 项目文档（README、AGENTS.md、docs/）使用中文撰写。
 
@@ -47,8 +60,17 @@
 | --- | --- | --- |
 | `explore`（内置） | `deepseek/deepseek-flash` | 只读探索代码库 |
 | `implementer` | `deepseek/deepseek-flash` | 按计划实现代码和测试；不改文档、`.opencode/**`，不做 git 提交 |
-| `reviewer` | `opencode/claude-haiku-5-5` | 只读审查计划和实现；可运行 `uv run pytest`，不改任何文件 |
+| `reviewer` | `opencode/claude-haiku-5-5` | 只读审查计划和实现；可运行 `uv run --no-sync pytest`，不改任何文件 |
 | `doc-writer` | `deepseek/deepseek-flash` | 只能改 `README.md`、`AGENTS.md`、`docs/**` |
+
+补充经验：
+
+- `glob` / `grep` 默认不显示隐藏目录（需 `hidden: true`），且遵守 `.gitignore`：搜不到 `data/`、`cases/`、
+  `.opencode/`。子代理读计划文件、`data/**` 时要用 `read` 直接读完整路径；派活时把完整路径写进任务描述。
+- 大任务容易让 `implementer`、`doc-writer` 步数耗尽（`doc-writer` 的 `steps` 已提到 60）：拆成小批，要求先
+  把核心做完再收尾；临时文件放 `C:\Users\DELL\AppData\Local\Temp\opencode\`，结束前删除。
+- reviewer 运行测试直接执行 `uv run --no-sync pytest ...`，不要加 `cd` 前缀，也不要用 `;` / `&&` 组合命令
+  （组合命令会被拆开逐条检查权限，容易被误拒）。
 
 ## 开发流程
 每个开发任务按四个阶段推进，**阶段切换都需要用户确认**，不得自行跳过。

@@ -7,11 +7,12 @@ import numpy as np
 import pytest
 
 from fvmrom.core.config import Settings
-from fvmrom.foam import Cases, Jobs, read_field
+from fvmrom.foam import Cases, Jobs, phi_weights, read_field, read_geometry
 from fvmrom.foam.jobs import ACTIVE_STATES
-from fvmrom.foam.transient import read_forces, run_transient
+from fvmrom.foam.transient import collect_transient, read_forces, run_transient
 from fvmrom.case_templates.cylinder import CylinderGeometry
 from fvmrom.case_templates.cylinder_transient import CylinderTransientProblem, TransientConfig
+from fvmrom.rom.evaluate import flux_consistency
 
 pytestmark = pytest.mark.wsl
 
@@ -190,3 +191,54 @@ def test_transient_resume_from_checkpoint(tmp_path):
         p.name for p in (case_dir / "postProcessing" / "forceCoeffs").iterdir()
     )
     assert restart_dirs == ["0", "0.5", "1"]  # the production phase restarted at t_spin
+
+
+def test_collect_transient_snapshots(tmp_path):
+    settings = _settings(tmp_path)
+    cases, jobs = Cases(settings), Jobs(settings)
+    config = TransientConfig(
+        re=100.0,
+        geometry=CylinderGeometry(res=0.5),
+        snapshot_dt=0.2,
+        t_spin=1.0,
+        t_end=2.0,
+    )
+    problem = CylinderTransientProblem(config)
+    run = run_transient(
+        problem, "wsl_collect", settings=settings, cases=cases, jobs=jobs, poll_s=1.0
+    )
+    assert run.converged, run.message
+    case_dir = cases.path(run.case)
+
+    data_dir = settings.data_dir / "cylinder_transient" / "wsl_collect"
+    data_dir.mkdir(parents=True)
+    forces = read_forces(case_dir, dt=config.timestep)
+    np.savez(data_dir / "forces.npz", **forces)
+    path = collect_transient(
+        problem, "wsl_collect", run, data_dir, workers=2, settings=settings
+    )
+
+    geometry = read_geometry(case_dir)
+    weights = phi_weights(geometry)
+    expected_times = np.array([1.0 + 0.2 * k for k in range(6)])
+    with np.load(path) as data:
+        assert data["times"] == pytest.approx(expected_times)
+        assert np.max(np.abs(np.diff(data["times"]) - 0.2)) < 1e-6 * 0.2
+        assert data["U"].shape == (6, geometry.topo.n_cells, 3)
+        assert data["p"].shape == (6, geometry.topo.n_cells)
+        assert data["phi"].shape == (6, weights.size)
+        assert data["volumes"] == pytest.approx(geometry.volumes, rel=1e-10)
+        assert data["phi_weights"] == pytest.approx(weights)
+        assert data["re"] == pytest.approx(100.0)
+
+        # the first snapshot is the t_spin directory that ends the spin-up phase
+        assert data["U"][0] == pytest.approx(read_field(case_dir, "1", "U").internal)
+
+        index = np.searchsorted(forces["time"], expected_times)
+        assert forces["time"][index] == pytest.approx(expected_times)
+        assert data["forces"][:, 0] == pytest.approx(forces["cd"][index])
+        assert data["forces"][:, 1] == pytest.approx(forces["cl"][index])
+
+        consistency = flux_consistency(data["U"], data["phi"], geometry, data["phi_weights"])
+        assert np.all(np.isfinite(consistency))
+        assert consistency.max() < 0.1
